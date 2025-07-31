@@ -1,0 +1,27 @@
+{
+  "name": "fusion-cross-backend",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.0",
+    "ethers": "^6.15.0",
+    "express": "^4.19.2",
+    "sqlite3": "^5.1.7",
+    "sqlite": "^5.1.1",
+    "stellar-sdk": "^12.2.0",
+    "crypto": "^1.0.1"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.3"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
