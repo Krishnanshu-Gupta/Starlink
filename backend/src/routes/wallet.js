@@ -1,6 +1,6 @@
 import express from "express";
 import { ethers } from "ethers";
-import pkg from "stellar-sdk";
+import pkg from "@stellar/stellar-sdk";
 const { TransactionBuilder, Operation, Asset, Memo } = pkg;
 import {
   getEthBalance,

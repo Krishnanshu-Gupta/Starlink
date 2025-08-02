@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useState, useEffect } from "react";
 import { ethers } from "ethers";
-import { publicKeyAsync, signTransaction } from "@stellar/freighter-api";
+import { getPublicKey, signTransaction, isConnected } from "@stellar/freighter-api";
 
 const WalletContext = createContext();
 
@@ -13,6 +13,11 @@ export function useWallet() {
 }
 
 export function WalletProvider({ children }) {
+  // Check if Stellar was previously connected
+  const stellarInitiallyConnected =
+    typeof window !== "undefined" &&
+    localStorage.getItem("stellarConnected") === "true";
+
   const [ethWallet, setEthWallet] = useState({
     address: "",
     signer: null,
@@ -31,86 +36,59 @@ export function WalletProvider({ children }) {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState("");
 
-  // Connect to Ethereum wallet (MetaMask)
+  // — Ethereum (MetaMask) —
   const connectEthWallet = async () => {
     setIsLoading(true);
     setError("");
-
     try {
       if (!window.ethereum) {
-        throw new Error("MetaMask is not installed. Please install MetaMask to continue.");
+        throw new Error(
+          "MetaMask is not installed. Please install MetaMask to continue."
+        );
       }
-
-      const provider = new ethers.BrowserProvider(window.ethereum);
-
-      // Request account access
+      const eth = window.ethereum;
+      let metamaskProvider = null;
+      if (Array.isArray(eth.providers)) {
+        metamaskProvider = eth.providers.find(p => p.isMetaMask) || null;
+      }
+      metamaskProvider =
+        metamaskProvider || (eth.isMetaMask ? eth : null);
+      if (!metamaskProvider) {
+        throw new Error(
+          "MetaMask provider not found. Please enable MetaMask."
+        );
+      }
+      const provider = new ethers.BrowserProvider(metamaskProvider);
       await provider.send("eth_requestAccounts", []);
-
       const signer = await provider.getSigner();
       const address = await signer.getAddress();
       const network = await provider.getNetwork();
-
-      // Get balance
-      const balance = await provider.getBalance(address);
-      const balanceEth = ethers.formatEther(balance);
-
+      const balanceBig = await provider.getBalance(address);
+      const balance = ethers.formatEther(balanceBig);
       setEthWallet({
         address,
         signer,
         provider,
-        balance: balanceEth,
+        balance,
         isConnected: true,
         chainId: network.chainId
       });
-
-      // Listen for account changes
-      window.ethereum.on("accountsChanged", handleEthAccountChange);
-      window.ethereum.on("chainChanged", handleEthChainChange);
-
+      metamaskProvider.on("accountsChanged", handleEthAccountChange);
+      metamaskProvider.on("chainChanged", handleEthChainChange);
     } catch (err) {
-      setError(err.message);
       console.error("Error connecting to Ethereum wallet:", err);
+      setError(err.message || String(err));
     } finally {
       setIsLoading(false);
     }
   };
 
-  // Connect to Stellar wallet (Freighter)
-  const connectStellarWallet = async () => {
-    setIsLoading(true);
-    setError("");
-
-    try {
-      const address = await publicKeyAsync();
-
-      if (!address) {
-        throw new Error("Failed to get Stellar address from Freighter");
-      }
-
-      // Get balance from API
-      const response = await fetch(`http://localhost:3001/api/wallet/xlm/balance/${address}`);
-      const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(data.error || "Failed to get Stellar balance");
-      }
-
-      setStellarWallet({
-        address,
-        balance: data.balance,
-        isConnected: true
-      });
-
-    } catch (err) {
-      setError(err.message);
-      console.error("Error connecting to Stellar wallet:", err);
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  // Disconnect Ethereum wallet
   const disconnectEthWallet = () => {
+    if (ethWallet.provider) {
+      const p = ethWallet.provider.provider;
+      p.removeListener("accountsChanged", handleEthAccountChange);
+      p.removeListener("chainChanged", handleEthChainChange);
+    }
     setEthWallet({
       address: "",
       signer: null,
@@ -119,52 +97,95 @@ export function WalletProvider({ children }) {
       isConnected: false,
       chainId: null
     });
-
-    if (window.ethereum) {
-      window.ethereum.removeListener("accountsChanged", handleEthAccountChange);
-      window.ethereum.removeListener("chainChanged", handleEthChainChange);
-    }
   };
 
-  // Disconnect Stellar wallet
-  const disconnectStellarWallet = () => {
-    setStellarWallet({
-      address: "",
-      balance: "0",
-      isConnected: false
-    });
-  };
-
-  // Handle Ethereum account changes
-  const handleEthAccountChange = async (accounts) => {
-    if (accounts.length === 0) {
+  const handleEthAccountChange = async accounts => {
+    if (!accounts.length) {
       disconnectEthWallet();
     } else {
-      // Reconnect with new account
       await connectEthWallet();
     }
   };
 
-  // Handle Ethereum chain changes
-  const handleEthChainChange = async () => {
-    // Reload the page to handle chain change
+  const handleEthChainChange = () => {
     window.location.reload();
   };
 
-  // Refresh balances
+  const signEthTransaction = async tx => {
+    if (!ethWallet.isConnected || !ethWallet.signer) {
+      throw new Error("Ethereum wallet not connected");
+    }
+    const sent = await ethWallet.signer.sendTransaction(tx);
+    return sent.wait();
+  };
+
+  // — Stellar (Freighter) —
+  const connectStellarWallet = async () => {
+    setIsLoading(true);
+    setError("");
+    try {
+      const installed = await isConnected();
+      if (!installed) {
+        throw new Error("Freighter extension not available.");
+      }
+      const address = await getPublicKey();
+      if (!address) {
+        throw new Error("Failed to get Stellar address from Freighter.");
+      }
+      const resp = await fetch(
+        `http://localhost:3001/api/wallet/xlm/balance/${address}`
+      );
+      if (!resp.ok) {
+        let errMsg;
+        try {
+          const errData = await resp.json();
+          errMsg = errData.error;
+        } catch {
+          errMsg = await resp.text();
+        }
+        throw new Error(errMsg || "Failed to fetch Stellar balance");
+      }
+      const data = await resp.json();
+      setStellarWallet({ address, balance: data.balance, isConnected: true });
+      localStorage.setItem("stellarConnected", "true");
+    } catch (err) {
+      console.error("Error connecting to Stellar wallet:", err);
+      setError(err.message || String(err));
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const disconnectStellarWallet = () => {
+    localStorage.removeItem("stellarConnected");
+    setStellarWallet({ address: "", balance: "0", isConnected: false });
+  };
+
+  const signStellarTransaction = async xdr => {
+    if (!stellarWallet.isConnected) {
+      throw new Error("Stellar wallet not connected");
+    }
+    return await signTransaction(xdr, { network: "TESTNET" });
+  };
+
+  // — Utilities —
   const refreshBalances = async () => {
     try {
       if (ethWallet.isConnected && ethWallet.provider) {
-        const balance = await ethWallet.provider.getBalance(ethWallet.address);
-        const balanceEth = ethers.formatEther(balance);
-        setEthWallet(prev => ({ ...prev, balance: balanceEth }));
+        const bal = await ethWallet.provider.getBalance(
+          ethWallet.address
+        );
+        setEthWallet(prev => ({
+          ...prev,
+          balance: ethers.formatEther(bal)
+        }));
       }
-
       if (stellarWallet.isConnected) {
-        const response = await fetch(`http://localhost:3001/api/wallet/xlm/balance/${stellarWallet.address}`);
-        const data = await response.json();
-
-        if (response.ok) {
+        const resp = await fetch(
+          `http://localhost:3001/api/wallet/xlm/balance/${stellarWallet.address}`
+        );
+        if (resp.ok) {
+          const data = await resp.json();
           setStellarWallet(prev => ({ ...prev, balance: data.balance }));
         }
       }
@@ -173,70 +194,39 @@ export function WalletProvider({ children }) {
     }
   };
 
-  // Sign Ethereum transaction
-  const signEthTransaction = async (transaction) => {
-    if (!ethWallet.isConnected || !ethWallet.signer) {
-      throw new Error("Ethereum wallet not connected");
-    }
+  const checkWalletAvailability = () => ({
+    hasMetaMask: !!window.ethereum,
+    hasFreighter:
+      typeof window.freighterApi !== "undefined"
+  });
 
-    try {
-      const tx = await ethWallet.signer.sendTransaction(transaction);
-      return await tx.wait();
-    } catch (err) {
-      throw new Error(`Transaction failed: ${err.message}`);
-    }
-  };
-
-  // Sign Stellar transaction
-  const signStellarTransaction = async (xdr) => {
-    if (!stellarWallet.isConnected) {
-      throw new Error("Stellar wallet not connected");
-    }
-
-    try {
-      const signedXdr = await signTransaction(xdr, { network: "TESTNET" });
-      return signedXdr;
-    } catch (err) {
-      throw new Error(`Stellar transaction failed: ${err.message}`);
-    }
-  };
-
-  // Check if wallets are available
-  const checkWalletAvailability = () => {
-    const hasMetaMask = !!window.ethereum;
-    const hasFreighter = typeof window !== "undefined" && window.freighterApi;
-
-    return { hasMetaMask, hasFreighter };
-  };
-
-  // Auto-connect on mount if previously connected
+  // Auto-connect on mount
   useEffect(() => {
-    const checkConnection = async () => {
-      if (window.ethereum && window.ethereum.selectedAddress) {
-        await connectEthWallet();
-      }
-    };
-
-    checkConnection();
+    if (window.ethereum && window.ethereum.selectedAddress) {
+      connectEthWallet();
+    }
+    if (stellarInitiallyConnected) {
+      connectStellarWallet();
+    }
   }, []);
 
-  const value = {
-    ethWallet,
-    stellarWallet,
-    isLoading,
-    error,
-    connectEthWallet,
-    connectStellarWallet,
-    disconnectEthWallet,
-    disconnectStellarWallet,
-    refreshBalances,
-    signEthTransaction,
-    signStellarTransaction,
-    checkWalletAvailability
-  };
-
   return (
-    <WalletContext.Provider value={value}>
+    <WalletContext.Provider
+      value={{
+        ethWallet,
+        stellarWallet,
+        isLoading,
+        error,
+        connectEthWallet,
+        disconnectEthWallet,
+        connectStellarWallet,
+        disconnectStellarWallet,
+        signEthTransaction,
+        signStellarTransaction,
+        refreshBalances,
+        checkWalletAvailability
+      }}
+    >
       {children}
     </WalletContext.Provider>
   );

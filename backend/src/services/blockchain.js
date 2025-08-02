@@ -1,5 +1,5 @@
 import { ethers } from "ethers";
-import pkg from "stellar-sdk";
+import pkg from "@stellar/stellar-sdk";
 const { Horizon, Networks } = pkg;
 
 // Ethereum configuration
@@ -83,7 +83,7 @@ export async function getXlmBalance(address) {
   try {
     const account = await server.loadAccount(address);
     const xlmBalance = account.balances.find(b => b.asset_type === "native");
-    return xlmBalance ? parseXlmAmount(xlmBalance.balance) : "0";
+    return xlmBalance ? xlmBalance.balance : "0";
   } catch (error) {
     console.error("Error getting XLM balance:", error);
     return "0";

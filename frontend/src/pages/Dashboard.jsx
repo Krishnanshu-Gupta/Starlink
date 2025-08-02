@@ -40,10 +40,10 @@ export default function Dashboard() {
   };
 
   return (
-    <div className="space-y-6">
+    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 space-y-6">
       {/* Welcome Section */}
       <div className="bg-gradient-to-r from-blue-600/20 to-purple-600/20 border border-blue-500/30 rounded-xl p-6">
-        <h1 className="text-3xl font-bold text-white mb-2">Welcome to Fusion-Cross</h1>
+        <h1 className="text-3xl font-bold text-white mb-2">Welcome to Starlink</h1>
         <p className="text-gray-300 text-lg">
           The first trustless atomic swap between Ethereum and Stellar
         </p>
@@ -153,13 +153,15 @@ export default function Dashboard() {
           </div>
         </div>
 
-        <div className="bg-gray-800/50 backdrop-blur-sm border border-gray-700 rounded-lg p-4">
-          <div className="text-center">
-            <p className="text-2xl font-bold text-blue-400">
-              {parseFloat(ethWallet.balance || 0) + parseFloat(stellarWallet.balance || 0)}
-            </p>
-            <p className="text-sm text-gray-400">Total Value</p>
-          </div>
+        <div className="bg-gray-800/50 backdrop-blur-sm border border-gray-700 rounded-lg p-4 text-center">
+          <p className="text-2xl font-bold text-white">
+            {ethWallet.isConnected && stellarWallet.isConnected ? "✅" : "⛔"}
+          </p>
+          <p className="text-sm text-gray-400">
+            {ethWallet.isConnected && stellarWallet.isConnected
+              ? "Ready to Swap"
+              : "Connect Both Wallets"}
+          </p>
         </div>
       </div>
 

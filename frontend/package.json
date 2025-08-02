@@ -10,13 +10,14 @@
   },
   "dependencies": {
     "@stellar/freighter-api": "^1.5.3",
+    "@stellar/stellar-sdk": "^13.3.0",
     "@tanstack/react-query": "^5.0.0",
     "axios": "^1.6.0",
     "ethers": "^6.15.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
-    "react-router-dom": "^6.22.1",
-    "react-hot-toast": "^2.4.1"
+    "react-hot-toast": "^2.4.1",
+    "react-router-dom": "^6.22.1"
   },
   "devDependencies": {
     "@types/react": "^18.2.43",

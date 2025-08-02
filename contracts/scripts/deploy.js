@@ -1,18 +1,25 @@
+// contracts/scripts/deploy.js  (CommonJS)
+
+const fs = require("fs");
 const hre = require("hardhat");
-const fs  = require("fs");
 
 async function main() {
-  const HTLC = await hre.ethers.getContractFactory("HTLC");
-  const htlc = await HTLC.deploy();                // returns Contract (not yet mined)
+  const HTLC     = await hre.ethers.getContractFactory("HTLC");
+  const Factory  = await hre.ethers.getContractFactory("TestEscrowFactory");
+  const Resolver = await hre.ethers.getContractFactory("Resolver");
 
-  await htlc.waitForDeployment();                  // v6 replacement for .deployed()
-  const addr = await htlc.getAddress();            // v6 replacement for .address
-  console.log("HTLC deployed to:", addr);
+  const htlc     = await HTLC.deploy();
+  const factory  = await Factory.deploy();
+  const resolver = await Resolver.deploy();
 
-  // Persist ABI & address for relayer / lock script
-  const abi = (await hre.artifacts.readArtifact("HTLC")).abi;
-  fs.writeFileSync("../htlc_abi.json", JSON.stringify(abi, null, 2));
-  fs.writeFileSync("../htlc_address.txt", addr);
+  await Promise.all([htlc.waitForDeployment(), factory.waitForDeployment(), resolver.waitForDeployment()]);
+
+  console.log("HTLC     :", htlc.target);
+  console.log("Factory  :", factory.target);
+  console.log("Resolver :", resolver.target);
+
+  fs.writeFileSync("../htlc_address.txt",     htlc.target);
+  fs.writeFileSync("../resolver_address.txt", resolver.target);
 }
 
-main().catch((err) => { console.error(err); process.exit(1); });
+main().catch((e) => { console.error(e); process.exit(1); });

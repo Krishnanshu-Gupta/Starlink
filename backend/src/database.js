@@ -10,7 +10,7 @@ let db;
 
 export async function createDatabase() {
   db = await open({
-    filename: join(__dirname, "../data/fusion-cross.db"),
+    filename: join(__dirname, "../data/starlink.db"),
     driver: sqlite3.Database
   });
 

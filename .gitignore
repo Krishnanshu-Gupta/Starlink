@@ -1,3 +1,10 @@
-node_modules/
-venv/
-*.env
+# Ignore all node_modules folders everywhere
+**/node_modules/
+
+# Ignore all venv folders everywhere
+**/venv/
+
+# Ignore all .env files anywhere
+**/*.env
+
+**/vite/

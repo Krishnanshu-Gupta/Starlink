@@ -1,0 +1,156 @@
+{
+  "_format": "hh-sol-cache-2",
+  "files": {
+    "/Users/krishnanshugupta/ETHGlobal/contracts/src/HTLC.sol": {
+      "lastModificationDate": 1754157101362,
+      "contentHash": "dba56d941b7e4eb16ad1a1bf3a1ba171",
+      "sourceName": "src/HTLC.sol",
+      "solcConfig": {
+        "version": "0.8.20",
+        "settings": {
+          "evmVersion": "paris",
+          "optimizer": {
+            "enabled": false,
+            "runs": 200
+          },
+          "outputSelection": {
+            "*": {
+              "*": [
+                "abi",
+                "evm.bytecode",
+                "evm.deployedBytecode",
+                "evm.methodIdentifiers",
+                "metadata"
+              ],
+              "": [
+                "ast"
+              ]
+            }
+          }
+        }
+      },
+      "imports": [
+        "./IERC20.sol"
+      ],
+      "versionPragmas": [
+        "^0.8.20"
+      ],
+      "artifacts": [
+        "HTLC"
+      ]
+    },
+    "/Users/krishnanshugupta/ETHGlobal/contracts/src/IERC20.sol": {
+      "lastModificationDate": 1754157101451,
+      "contentHash": "8c731f4613f107d8cda72b08fac34659",
+      "sourceName": "src/IERC20.sol",
+      "solcConfig": {
+        "version": "0.8.20",
+        "settings": {
+          "evmVersion": "paris",
+          "optimizer": {
+            "enabled": false,
+            "runs": 200
+          },
+          "outputSelection": {
+            "*": {
+              "*": [
+                "abi",
+                "evm.bytecode",
+                "evm.deployedBytecode",
+                "evm.methodIdentifiers",
+                "metadata"
+              ],
+              "": [
+                "ast"
+              ]
+            }
+          }
+        }
+      },
+      "imports": [],
+      "versionPragmas": [
+        "^0.8.20"
+      ],
+      "artifacts": [
+        "IERC20"
+      ]
+    },
+    "/Users/krishnanshugupta/ETHGlobal/contracts/src/TestEscrowFactory.sol": {
+      "lastModificationDate": 1754157101577,
+      "contentHash": "19f0672ba7e016aada4ea5833c385d55",
+      "sourceName": "src/TestEscrowFactory.sol",
+      "solcConfig": {
+        "version": "0.8.20",
+        "settings": {
+          "evmVersion": "paris",
+          "optimizer": {
+            "enabled": false,
+            "runs": 200
+          },
+          "outputSelection": {
+            "*": {
+              "*": [
+                "abi",
+                "evm.bytecode",
+                "evm.deployedBytecode",
+                "evm.methodIdentifiers",
+                "metadata"
+              ],
+              "": [
+                "ast"
+              ]
+            }
+          }
+        }
+      },
+      "imports": [
+        "./HTLC.sol"
+      ],
+      "versionPragmas": [
+        "^0.8.20"
+      ],
+      "artifacts": [
+        "TestEscrowFactory"
+      ]
+    },
+    "/Users/krishnanshugupta/ETHGlobal/contracts/src/Resolver.sol": {
+      "lastModificationDate": 1754157177070,
+      "contentHash": "923915e4a06cd64fe2520798e03acfba",
+      "sourceName": "src/Resolver.sol",
+      "solcConfig": {
+        "version": "0.8.20",
+        "settings": {
+          "evmVersion": "paris",
+          "optimizer": {
+            "enabled": false,
+            "runs": 200
+          },
+          "outputSelection": {
+            "*": {
+              "*": [
+                "abi",
+                "evm.bytecode",
+                "evm.deployedBytecode",
+                "evm.methodIdentifiers",
+                "metadata"
+              ],
+              "": [
+                "ast"
+              ]
+            }
+          }
+        }
+      },
+      "imports": [
+        "./HTLC.sol",
+        "./IERC20.sol"
+      ],
+      "versionPragmas": [
+        "^0.8.20"
+      ],
+      "artifacts": [
+        "Resolver"
+      ]
+    }
+  }
+}

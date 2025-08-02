@@ -1,6 +1,6 @@
 import express from "express";
 import { ethers } from "ethers";
-import pkg from "stellar-sdk";
+import pkg from "@stellar/stellar-sdk";
 const { Horizon, Keypair, TransactionBuilder, Networks, TimeBounds, Signer, Account, Operation } = pkg;
 import crypto from "crypto";
 import {
@@ -147,7 +147,7 @@ router.post("/lock-stellar", async (req, res) => {
     // Create refund transaction (signed offline)
     const dummyAccount = new Account(escrowKeypair.publicKey(), 1);
     const refundTx = new TransactionBuilder(dummyAccount, {
-      networkPassphrase: Network.TESTNET_NETWORK_PASSPHRASE,
+      networkPassphrase: Networks.TESTNET_NETWORK_PASSPHRASE,
       fee: await stellarServer.fetchBaseFee()
     })
       .addOperation(Operation.accountMerge({
@@ -160,7 +160,7 @@ router.post("/lock-stellar", async (req, res) => {
 
     // Fund escrow and set signers
     const fundTx = new TransactionBuilder(await stellarServer.loadAccount(stellarAddress), {
-      networkPassphrase: Network.TESTNET_NETWORK_PASSPHRASE,
+      networkPassphrase: Networks.TESTNET_NETWORK_PASSPHRASE,
       fee: await stellarServer.fetchBaseFee()
     })
     .addOperation(Operation.createAccount({
@@ -248,7 +248,7 @@ router.post("/claim", async (req, res) => {
       const escrowAccount = await stellarServer.loadAccount(escrowKeypair.publicKey());
 
       const claimTx = new TransactionBuilder(escrowAccount, {
-        networkPassphrase: Network.TESTNET_NETWORK_PASSPHRASE,
+        networkPassphrase: Networks.TESTNET_NETWORK_PASSPHRASE,
         fee: await stellarServer.fetchBaseFee()
       })
         .addOperation(Operation.accountMerge({

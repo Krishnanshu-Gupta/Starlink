@@ -1,4 +1,4 @@
-import { Server, TransactionEnvelope } from "stellar-sdk";
+import { Server, TransactionEnvelope } from "@stellar/stellar-sdk";
 import { sha256 } from "js-sha256";
 import ethClaim from "./ethClaimer.js";
 import dotenv from "dotenv";

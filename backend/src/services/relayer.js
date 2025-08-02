@@ -1,4 +1,4 @@
-import pkg from "stellar-sdk";
+import pkg from "@stellar/stellar-sdk";
 const { Horizon, TransactionEnvelope, Networks } = pkg;
 import { ethers } from "ethers";
 import crypto from "crypto";
@@ -18,7 +18,7 @@ export async function startRelayer() {
   }
 
   isRunning = true;
-  console.log("🚀 Starting Fusion-Cross Relayer Service...");
+  console.log("🚀 Starting Starlink Relayer Service...");
 
   // Start monitoring loop
   setInterval(async () => {
@@ -198,7 +198,7 @@ export function getRelayerStatus() {
 export function stopRelayer() {
   isRunning = false;
   monitoringSwaps.clear();
-  console.log("🛑 Fusion-Cross Relayer Service stopped");
+  console.log("🛑 Starlink Relayer Service stopped");
 }
 
 // Export for testing

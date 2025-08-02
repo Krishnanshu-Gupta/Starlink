@@ -1,13 +1,16 @@
-/** @type import('hardhat/config').HardhatUserConfig */
-
+// contracts/hardhat.config.js
 require("@nomicfoundation/hardhat-toolbox");
+require("dotenv").config();
 
 module.exports = {
   solidity: "0.8.20",
+  paths: {
+    sources: "./src" // This tells Hardhat to look for Solidity files in the current folder
+  },
   networks: {
-  sepolia: {
-    url: "https://sepolia.infura.io/v3/04944e1b094c4f93ad909a10bcff6803",
-    accounts: ["aaa27dbba6cc8ae54797318f141670cd40f37a50282d32499d889b4cd5546441"]
+    sepolia: {
+      url: process.env.INFURA_URL,
+      accounts: [process.env.PRIVATE_KEY]
+    }
   }
-}
 };

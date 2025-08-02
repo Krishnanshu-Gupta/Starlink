@@ -1,21 +1,31 @@
+// Example LockXlm.jsx
 import { useState } from "react";
-import useStellar from "../hooks/useStellar";
+import { useWallet } from "../contexts/WalletContext";
 import axios from "axios";
 
 export default function LockXlm() {
-  const { pub, connect } = useStellar();
-  const [hash,setHash]=useState("");
+  const { stellarWallet, connectStellarWallet } = useWallet();
+  const [hash, setHash] = useState("");
 
-  async function lockXlm() {
-    const { data } = await axios.post("http://localhost:3001/api/lock-xlm", { pub });
+  async function handleLock() {
+    if (!stellarWallet.address) return;
+    const { data } = await axios.post("http://localhost:3001/api/lock-xlm", { pub: stellarWallet.address });
     setHash(data.hash);
   }
 
   return (
     <div className="space-y-4">
-      {!pub && <button onClick={connect} className="btn">Connect Freighter</button>}
-      {pub && <button onClick={lockXlm} className="btn">Lock 10 XLM</button>}
-      {hash && <p>Hash: {hash}</p>}
+      {!stellarWallet.isConnected && (
+        <button onClick={connectStellarWallet} className="btn">
+          Connect Freighter
+        </button>
+      )}
+      {stellarWallet.isConnected && (
+        <button onClick={handleLock} className="btn">
+          Lock 10 XLM
+        </button>
+      )}
+      {hash && <p className="break-all">Hash: {hash}</p>}
     </div>
   );
 }
