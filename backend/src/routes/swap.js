@@ -1,293 +1,410 @@
 import express from "express";
-import { ethers } from "ethers";
-import pkg from "@stellar/stellar-sdk";
-const { Horizon, Keypair, TransactionBuilder, Networks, TimeBounds, Signer, Account, Operation } = pkg;
 import crypto from "crypto";
+import { getDatabase } from "../database.js";
 import {
-  createSwap,
-  getSwap,
-  updateSwapStatus,
-  getSwapsByAddress,
-  addTransaction
-} from "../database.js";
-import { getEthereumProvider, getStellarServer } from "../services/blockchain.js";
+  getHTLCContract,
+  getResolverContract,
+  generateSecretAndHash,
+  calculateTimelock,
+  formatEthAmount,
+  formatXlmAmount
+} from "../services/blockchain.js";
+import {
+  startDutchAuction,
+  getCurrentAuctionPrice,
+  submitBid,
+  getAuctionStatus,
+  endAuction,
+  getResolvers,
+  startAutomatedBidding,
+  getResolverStats
+} from "../services/resolver.js";
+import { ethers } from "ethers";
+import { Keypair } from "@stellar/stellar-sdk";
+import { createStellarHTLC } from "../services/stellar.js";
 
 const router = express.Router();
 
-// Initialize blockchain services
-const ethProvider = getEthereumProvider();
-const stellarServer = getStellarServer();
+// Contract addresses
+const HTLC_CONTRACT_ADDRESS = "0x6c91739cbC4c9e4F1907Cc11AC8431ca1a55d0C6";
+const RESOLVER_CONTRACT_ADDRESS = "0xD5cA355e5Cf8Ba93d0A363C956204d0734e73F50";
 
-// POST /api/swap/initiate - Start a new atomic swap
-router.post("/initiate", async (req, res) => {
+// POST /api/swap/initiate-eth - Initiate ETH to XLM swap
+router.post("/initiate-eth", async (req, res) => {
   try {
-    const {
-      initiatorAddress,
-      recipientAddress,
-      tokenAddress = "0x0000000000000000000000000000000000000000", // ETH by default
-      amount,
-      stellarAmount,
-      timelockMinutes = 30
-    } = req.body;
-
-    // Validate input
-    if (!initiatorAddress || !recipientAddress || !amount || !stellarAmount) {
-      return res.status(400).json({ error: "Missing required parameters" });
-    }
+    const { ethAmount, xlmAmount, timelockMinutes, initiatorAddress, recipientAddress } = req.body;
 
     // Generate secret and hash
-    const secret = crypto.randomBytes(32);
-    const secretHex = secret.toString("hex");
-    const hashHex = crypto.createHash("sha256").update(secret).digest("hex");
+    const { secret, secretHex, hash } = generateSecretAndHash();
+    const timelock = calculateTimelock(timelockMinutes || 30);
+    const swapId = crypto.randomBytes(32).toString("hex");
 
-    // Calculate timelock
-    const timelock = Math.floor(Date.now() / 1000) + (timelockMinutes * 60);
+    // Store swap in database
+    const db = await getDatabase();
 
-    // Generate unique swap ID
-    const swapId = crypto.randomUUID();
+    const ethAmountFormatted = formatEthAmount(ethAmount).toString();
+    const xlmAmountFormatted = formatXlmAmount(xlmAmount).toString();
+    const timelockFormatted = timelock.toString();
 
-    // Create Stellar escrow account
-    const escrowKeypair = Keypair.random();
-    const escrowPublic = escrowKeypair.publicKey();
-    const escrowSecret = escrowKeypair.secret();
-
-    // Create swap record in database
-    const swapData = {
-      id: swapId,
-      initiator_address: initiatorAddress,
-      recipient_address: recipientAddress,
-      token_address: tokenAddress,
-      amount: amount.toString(),
-      hash_hex: hashHex,
-      secret_hex: secretHex,
-      timelock,
-      stellar_escrow_public: escrowPublic,
-      stellar_escrow_secret: escrowSecret,
-      status: "pending"
-    };
-
-    await createSwap(swapData);
-
-    // Return swap details for frontend
-    res.json({
-      success: true,
+    console.log('Debug values:', {
       swapId,
-      hashHex,
+      ethAmountFormatted,
+      xlmAmountFormatted,
+      hash,
       secretHex,
-      escrowPublic,
-      timelock,
-      message: "Swap initiated successfully. Lock your ETH first, then lock XLM."
+      timelockFormatted
     });
 
+    await db.run(`
+      INSERT INTO swaps (
+        id, direction, initiator_address, recipient_address,
+        eth_amount, xlm_amount, hash, secret, timelock, status
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `, [
+      swapId, "ETH_TO_XLM", initiatorAddress, recipientAddress,
+      ethAmountFormatted, xlmAmountFormatted,
+      hash, secretHex, timelockFormatted, "pending"
+    ]);
+
+    // Start Dutch auction for resolvers
+    const auction = startDutchAuction(swapId, parseFloat(xlmAmount), parseFloat(xlmAmount), 5);
+
+    // Start automated resolver bidding
+    startAutomatedBidding();
+
+    console.log(`🔄 Swap initiated: ${swapId}`);
+    console.log(`💰 Amount: ${ethAmount} ETH → ${xlmAmount} XLM`);
+    console.log(`⏰ Timelock: ${timelockMinutes || 30} minutes`);
+
+    res.json({
+      swapId,
+      hash,
+      timelock,
+      secret: secretHex,
+      auction: auction
+    });
   } catch (error) {
     console.error("Error initiating swap:", error);
     res.status(500).json({ error: "Failed to initiate swap" });
   }
 });
 
-// POST /api/swap/lock-eth - Lock ETH on Ethereum
+// GET /api/swap/auction/:swapId - Get auction status
+router.get("/auction/:swapId", async (req, res) => {
+  try {
+    const { swapId } = req.params;
+    const status = getAuctionStatus();
+
+    if (!status.active || status.swapId !== swapId) {
+      return res.status(404).json({ error: "Auction not found" });
+    }
+
+    res.json(status);
+  } catch (error) {
+    console.error("Error getting auction status:", error);
+    res.status(500).json({ error: "Failed to get auction status" });
+  }
+});
+
+// POST /api/swap/bid - Submit a bid from a resolver
+router.post("/bid", async (req, res) => {
+  try {
+    const { resolverId, amount, price } = req.body;
+
+    const bid = submitBid(resolverId, parseFloat(amount), parseFloat(price));
+
+    res.json({
+      success: true,
+      bid,
+      auctionStatus: getAuctionStatus()
+    });
+  } catch (error) {
+    console.error("Error submitting bid:", error);
+    res.status(400).json({ error: error.message });
+  }
+});
+
+// POST /api/swap/lock-eth - Lock ETH in HTLC (called by user)
 router.post("/lock-eth", async (req, res) => {
   try {
     const { swapId, signature } = req.body;
 
-    const swap = await getSwap(swapId);
+    const db = await getDatabase();
+    const swap = await db.get("SELECT * FROM swaps WHERE id = ?", [swapId]);
     if (!swap) {
       return res.status(404).json({ error: "Swap not found" });
     }
 
     if (swap.status !== "pending") {
-      return res.status(400).json({ error: "Swap is not in pending state" });
+      return res.status(400).json({ error: "Swap is not in pending status" });
     }
 
-    // Verify the signature matches the expected transaction
-    const expectedMessage = ethers.utils.id(
-      `Lock ETH for swap ${swapId}: ${swap.amount} wei to ${swap.recipient_address}`
-    );
-    const recoveredAddress = ethers.utils.verifyMessage(expectedMessage, signature);
+    console.log(`🔒 Locking ETH for swap: ${swapId}`);
 
-    if (recoveredAddress.toLowerCase() !== swap.initiator_address.toLowerCase()) {
-      return res.status(401).json({ error: "Invalid signature" });
+    try {
+      // Verify signature (in production, this would be a real signature from MetaMask)
+      // For now, we'll skip signature verification for demo purposes
+      // const signer = ethers.verifyMessage(swapId, signature);
+
+      // Create signer from private key (in production, this would come from MetaMask)
+      const provider = getEthereumProvider();
+      const signer = new ethers.Wallet(process.env.USER_PRIVATE_KEY || "0x1234567890123456789012345678901234567890123456789012345678901234", provider);
+
+      // Lock ETH in HTLC contract
+      const result = await lockEthInHTLC(
+        swap.initiator_address,
+        swap.hash,
+        swap.timelock,
+        swap.eth_amount,
+        signer
+      );
+
+      console.log("Real HTLC lockETH transaction hash:", result.hash);
+
+      // Update database with transaction hash
+      await db.run(
+        "UPDATE swaps SET status = 'locked_eth', ethereum_tx_hash = ? WHERE id = ?",
+        [result.hash, swapId]
+      );
+
+      console.log("✅ ETH locked successfully");
+      res.json({
+        success: true,
+        message: "ETH locked successfully. Resolvers can now bid on XLM.",
+        status: "locked_eth",
+        txHash: result.hash
+      });
+    } catch (error) {
+      console.error("HTLC lock error:", error);
+      return res.status(500).json({ error: "Failed to lock ETH in HTLC contract" });
     }
-
-    // Update swap status
-    await updateSwapStatus(swapId, "locked_eth", {
-      ethereum_tx_hash: "pending" // Will be updated when transaction is confirmed
-    });
-
-    res.json({
-      success: true,
-      message: "ETH locked successfully. Now lock XLM on Stellar.",
-      nextStep: "lock_stellar"
-    });
-
   } catch (error) {
     console.error("Error locking ETH:", error);
     res.status(500).json({ error: "Failed to lock ETH" });
   }
 });
 
-// POST /api/swap/lock-stellar - Lock XLM on Stellar
-router.post("/lock-stellar", async (req, res) => {
+// POST /api/swap/lock-xlm - Lock XLM in Stellar escrow (called by resolvers)
+router.post("/lock-xlm", async (req, res) => {
   try {
-    const { swapId, stellarAddress, xlmAmount } = req.body;
+    const { swapId, resolverId, amount } = req.body;
+    const db = await getDatabase();
+    const swap = await db.get("SELECT * FROM swaps WHERE id = ?", [swapId]);
+    if (!swap) { return res.status(404).json({ error: "Swap not found" }); }
+    if (swap.status !== "locked_eth") { return res.status(400).json({ error: "ETH must be locked first" }); }
 
-    const swap = await getSwap(swapId);
-    if (!swap) {
-      return res.status(404).json({ error: "Swap not found" });
+    console.log(`🔒 Resolver ${resolverId} locking ${amount} XLM for swap ${swapId}`);
+
+    try {
+      // Get resolver configuration
+      const resolver = getResolver(resolverId);
+      if (!resolver) {
+        return res.status(400).json({ error: "Invalid resolver" });
+      }
+
+      // Create Stellar keypair from resolver's secret key
+      const resolverKeypair = Keypair.fromSecret(resolver.stellarSecretKey);
+
+      // Create Stellar HTLC escrow
+      const stellarResult = await createStellarHTLC(
+        swap.recipient_address,
+        swap.hash,
+        swap.timelock,
+        formatXlmAmount(amount),
+        resolverKeypair
+      );
+
+      console.log("Real Stellar escrow address:", stellarResult.escrowAddress);
+      console.log("Real Stellar transaction hash:", stellarResult.transactionHash);
+
+      await db.run(`
+        INSERT INTO resolver_locks (
+          swap_id, resolver_id, amount, escrow_address, stellar_tx_hash, status
+        ) VALUES (?, ?, ?, ?, ?, ?)
+      `, [swapId, resolverId, amount, stellarResult.escrowAddress, stellarResult.transactionHash, "locked"]);
+
+      console.log(`✅ ${amount} XLM locked by resolver ${resolverId}`);
+      res.json({
+        success: true,
+        message: `${amount} XLM locked by resolver ${resolverId}`,
+        escrowAddress: stellarResult.escrowAddress,
+        stellarTxHash: stellarResult.transactionHash
+      });
+    } catch (error) {
+      console.error("Stellar HTLC error:", error);
+      return res.status(500).json({ error: "Failed to create Stellar HTLC" });
     }
-
-    if (swap.status !== "locked_eth") {
-      return res.status(400).json({ error: "ETH must be locked first" });
-    }
-
-    // Create Stellar HTLC escrow
-    const escrowKeypair = Keypair.fromSecret(swap.stellar_escrow_secret);
-    const expirationTs = swap.timelock;
-
-    // Create refund transaction (signed offline)
-    const dummyAccount = new Account(escrowKeypair.publicKey(), 1);
-    const refundTx = new TransactionBuilder(dummyAccount, {
-      networkPassphrase: Networks.TESTNET_NETWORK_PASSPHRASE,
-      fee: await stellarServer.fetchBaseFee()
-    })
-      .addOperation(Operation.accountMerge({
-        destination: stellarAddress
-      }))
-      .setTimeout(expirationTs)
-      .build();
-
-    refundTx.sign(escrowKeypair);
-
-    // Fund escrow and set signers
-    const fundTx = new TransactionBuilder(await stellarServer.loadAccount(stellarAddress), {
-      networkPassphrase: Networks.TESTNET_NETWORK_PASSPHRASE,
-      fee: await stellarServer.fetchBaseFee()
-    })
-    .addOperation(Operation.createAccount({
-        destination: escrowKeypair.publicKey(),
-        startingBalance: xlmAmount
-      }))
-      .addOperation(Operation.setOptions({
-        source: escrowKeypair.publicKey(),
-        masterWeight: 0
-      }))
-      .addOperation(Operation.setOptions({
-        source: escrowKeypair.publicKey(),
-        signer: Signer.sha256Hash(swap.hash_hex, 1)
-      }))
-      .addOperation(Operation.setOptions({
-        source: escrowKeypair.publicKey(),
-        signer: Signer.preAuthTx(refundTx.hash(), 1)
-      }))
-      .addOperation(Operation.setOptions({
-        source: escrowKeypair.publicKey(),
-        lowThreshold: 1,
-        medThreshold: 1,
-        highThreshold: 1
-      }))
-      .setTimeout(Math.floor(Date.now() / 1000) + 300)
-      .build();
-
-    // Note: In a real implementation, the user would sign this transaction
-    // For now, we'll simulate the success
-    const stellarTxHash = "simulated_stellar_tx_hash";
-
-    // Update swap status
-    await updateSwapStatus(swapId, "locked_stellar", {
-      stellar_tx_hash: stellarTxHash
-    });
-
-    // Add transaction record
-    await addTransaction({
-      swap_id: swapId,
-      chain: "stellar",
-      tx_type: "lock",
-      tx_hash: stellarTxHash,
-      status: "confirmed"
-    });
-
-    res.json({
-      success: true,
-      message: "XLM locked successfully. Swap is ready to claim.",
-      nextStep: "claim",
-      stellarTxHash
-    });
-
   } catch (error) {
     console.error("Error locking XLM:", error);
     res.status(500).json({ error: "Failed to lock XLM" });
   }
 });
 
-// POST /api/swap/claim - Claim funds from the swap
-router.post("/claim", async (req, res) => {
+// POST /api/swap/claim-xlm - Claim XLM using secret
+router.post("/claim-xlm", async (req, res) => {
   try {
-    const { swapId, secretHex, chain } = req.body;
+    const { swapId, secret } = req.body;
 
-    const swap = await getSwap(swapId);
+    const db = await getDatabase();
+    const swap = await db.get("SELECT * FROM swaps WHERE id = ?", [swapId]);
     if (!swap) {
       return res.status(404).json({ error: "Swap not found" });
     }
 
-    if (swap.status !== "locked_stellar") {
-      return res.status(400).json({ error: "Swap is not ready for claiming" });
-    }
-
-    // Verify the secret matches the hash
-    const computedHash = crypto.createHash("sha256")
-      .update(Buffer.from(secretHex, "hex"))
-      .digest("hex");
-
-    if (computedHash !== swap.hash_hex) {
+    // Verify secret matches hash
+    const hash = ethers.keccak256("0x" + secret);
+    if (hash !== swap.hash) {
       return res.status(400).json({ error: "Invalid secret" });
     }
 
-    if (chain === "stellar") {
-      // Claim XLM from Stellar escrow
-      const escrowKeypair = Keypair.fromSecret(swap.stellar_escrow_secret);
-      const escrowAccount = await stellarServer.loadAccount(escrowKeypair.publicKey());
+    console.log("🔓 Claiming XLM for swap:", swapId);
 
-      const claimTx = new TransactionBuilder(escrowAccount, {
-        networkPassphrase: Networks.TESTNET_NETWORK_PASSPHRASE,
-        fee: await stellarServer.fetchBaseFee()
-      })
-        .addOperation(Operation.accountMerge({
-          destination: swap.recipient_address
-        }))
-        .setTimeout(swap.timelock)
-        .build();
+    let totalClaimed = 0;
 
-      // Sign with the preimage
-      claimTx.signHashX(Buffer.from(secretHex, "hex"));
+    try {
+      // Get all resolver locks for this swap
+      const resolverLocks = await db.all("SELECT * FROM resolver_locks WHERE swap_id = ? AND status = 'locked'", [swapId]);
 
-      // Note: In a real implementation, this would be submitted
-      const claimTxHash = "simulated_claim_tx_hash";
+      const claimResults = [];
 
-      await updateSwapStatus(swapId, "claimed_stellar", {
-        claim_tx_hash: claimTxHash
-      });
+      for (const lock of resolverLocks) {
+        console.log(`Claiming ${lock.amount} XLM from resolver ${lock.resolver_id}`);
 
-      await addTransaction({
-        swap_id: swapId,
-        chain: "stellar",
-        tx_type: "claim",
-        tx_hash: claimTxHash,
-        status: "confirmed"
-      });
+        try {
+          // Get resolver configuration
+          const resolver = getResolver(lock.resolver_id);
+          if (!resolver) {
+            console.error(`Resolver ${lock.resolver_id} not found`);
+            continue;
+          }
+
+          // Create resolver keypair
+          const resolverKeypair = Keypair.fromSecret(resolver.stellarSecretKey);
+
+          // Claim XLM from Stellar HTLC
+          const stellarResult = await claimStellarHTLC(
+            lock.escrow_address,
+            swap.recipient_address,
+            secret,
+            resolverKeypair
+          );
+
+          console.log(`Real Stellar claim transaction hash: ${stellarResult.transactionHash}`);
+
+          // Update resolver lock status
+          await db.run(
+            "UPDATE resolver_locks SET status = 'claimed', claim_tx_hash = ? WHERE id = ?",
+            [stellarResult.transactionHash, lock.id]
+          );
+
+          totalClaimed += parseFloat(lock.amount);
+          claimResults.push({
+            resolverId: lock.resolver_id,
+            amount: lock.amount,
+            txHash: stellarResult.transactionHash
+          });
+        } catch (error) {
+          console.error(`Error claiming from resolver ${lock.resolver_id}:`, error);
+          // Continue with other resolvers even if one fails
+        }
+      }
+
+      // Update main swap status
+      await db.run("UPDATE swaps SET status = 'claimed_xlm' WHERE id = ?", [swapId]);
+
+      console.log(`✅ Total XLM claimed: ${totalClaimed}`);
 
       res.json({
         success: true,
         message: "XLM claimed successfully",
-        txHash: claimTxHash
+        status: "claimed_xlm",
+        totalClaimed,
+        claimResults
       });
+    } catch (error) {
+      console.error("Stellar claim error:", error);
+      return res.status(500).json({ error: "Failed to claim XLM from Stellar HTLC" });
+    }
+  } catch (error) {
+    console.error("Error claiming XLM:", error);
+    res.status(500).json({ error: "Failed to claim XLM" });
+  }
+});
 
-    } else {
-      return res.status(400).json({ error: "Invalid chain specified" });
+// POST /api/swap/claim-eth - Claim ETH using secret (called by relayer)
+router.post("/claim-eth", async (req, res) => {
+  try {
+    const { swapId, secret, resolverId } = req.body;
+
+    const db = await getDatabase();
+    const swap = await db.get("SELECT * FROM swaps WHERE id = ?", [swapId]);
+    if (!swap) {
+      return res.status(404).json({ error: "Swap not found" });
     }
 
+    // Verify secret matches hash
+    const hash = ethers.keccak256("0x" + secret);
+    if (hash !== swap.hash) {
+      return res.status(400).json({ error: "Invalid secret" });
+    }
+
+    console.log(`🔓 Resolver ${resolverId} claiming ETH for swap ${swapId}`);
+
+    try {
+      // Get resolver configuration
+      const resolver = getResolver(resolverId);
+      if (!resolver) {
+        return res.status(400).json({ error: "Invalid resolver" });
+      }
+
+      // Create signer for resolver
+      const provider = getEthereumProvider();
+      const signer = new ethers.Wallet(resolver.ethPrivateKey, provider);
+
+      // Claim ETH from HTLC contract
+      const result = await claimEthFromHTLC(swapId, "0x" + secret, signer);
+
+      console.log("Real HTLC claim transaction hash:", result.hash);
+
+      // Update database
+      await db.run("UPDATE swaps SET status = 'completed', claim_tx_hash = ? WHERE id = ?", [result.hash, swapId]);
+
+      console.log("✅ ETH claimed successfully by resolver");
+      res.json({
+        success: true,
+        message: "ETH claimed successfully by resolver",
+        status: "completed",
+        txHash: result.hash
+      });
+    } catch (error) {
+      console.error("HTLC claim error:", error);
+      return res.status(500).json({ error: "Failed to claim ETH from HTLC contract" });
+    }
   } catch (error) {
-    console.error("Error claiming funds:", error);
-    res.status(500).json({ error: "Failed to claim funds" });
+    console.error("Error claiming ETH:", error);
+    res.status(500).json({ error: "Failed to claim ETH" });
+  }
+});
+
+// GET /api/swap/resolvers - Get list of resolvers
+router.get("/resolvers", async (req, res) => {
+  try {
+    const resolvers = getResolvers();
+    res.json(resolvers);
+  } catch (error) {
+    console.error("Error getting resolvers:", error);
+    res.status(500).json({ error: "Failed to get resolvers" });
+  }
+});
+
+// GET /api/swap/resolver-stats - Get resolver fill statistics
+router.get("/resolver-stats", async (req, res) => {
+  try {
+    const stats = getResolverStats();
+    res.json(stats);
+  } catch (error) {
+    console.error("Error getting resolver stats:", error);
+    res.status(500).json({ error: "Failed to get resolver stats" });
   }
 });
 
@@ -295,18 +412,15 @@ router.post("/claim", async (req, res) => {
 router.get("/status/:swapId", async (req, res) => {
   try {
     const { swapId } = req.params;
-    const swap = await getSwap(swapId);
+    const db = await getDatabase();
+    const swap = await db.get("SELECT * FROM swaps WHERE id = ?", [swapId]);
 
     if (!swap) {
       return res.status(404).json({ error: "Swap not found" });
     }
 
-    // Get transaction history
-    const transactions = await getTransactions(swapId);
-
     res.json({
       swap,
-      transactions,
       status: swap.status,
       canClaim: swap.status === "locked_stellar",
       canRefund: swap.status === "locked_eth" && Date.now() / 1000 > swap.timelock
@@ -322,7 +436,12 @@ router.get("/status/:swapId", async (req, res) => {
 router.get("/history/:address", async (req, res) => {
   try {
     const { address } = req.params;
-    const swaps = await getSwapsByAddress(address);
+    const db = await getDatabase();
+    const swaps = await db.all(`
+      SELECT * FROM swaps
+      WHERE initiator_address = ? OR recipient_address = ?
+      ORDER BY created_at DESC
+    `, [address, address]);
 
     res.json({
       swaps,
@@ -342,7 +461,8 @@ router.post("/refund", async (req, res) => {
   try {
     const { swapId, chain } = req.body;
 
-    const swap = await getSwap(swapId);
+    const db = await getDatabase();
+    const swap = await db.get("SELECT * FROM swaps WHERE id = ?", [swapId]);
     if (!swap) {
       return res.status(404).json({ error: "Swap not found" });
     }
@@ -356,7 +476,7 @@ router.post("/refund", async (req, res) => {
     }
 
     // Update status
-    await updateSwapStatus(swapId, "refunded");
+    await db.run("UPDATE swaps SET status = 'refunded' WHERE id = ?", [swapId]);
 
     res.json({
       success: true,

@@ -1,9 +1,10 @@
-import React from "react";
+import React, { useState } from "react";
 import { Link, useLocation } from "react-router-dom";
 import { useWallet } from "../contexts/WalletContext.jsx";
 
 export default function Header() {
   const location = useLocation();
+  const [showDebug, setShowDebug] = useState(false);
   const {
     ethWallet,
     stellarWallet,
@@ -11,11 +12,22 @@ export default function Header() {
     connectStellarWallet,
     disconnectEthWallet,
     disconnectStellarWallet,
+    checkFreighterStatus,
     isLoading,
     error,
   } = useWallet();
 
   const isActive = (path) => location.pathname === path;
+
+  const handleDebugFreighter = async () => {
+    const isAvailable = await checkFreighterStatus();
+
+    if (!isAvailable) {
+      setError("Freighter is not available. Please check if it's installed and unlocked.");
+    } else {
+      setError("Freighter is available. Try connecting again.");
+    }
+  };
 
   return (
     <header className="bg-gray-800/50 backdrop-blur-sm border-b border-gray-700 rounded-lg">
@@ -69,7 +81,7 @@ export default function Header() {
               <button
                 onClick={connectEthWallet}
                 disabled={isLoading}
-                className="px-3 py-1 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 text-white rounded-md"
+                className="px-3 py-1 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 text-white rounded-md transition-colors"
               >
                 {isLoading ? "Connecting..." : "Connect ETH"}
               </button>
@@ -91,13 +103,22 @@ export default function Header() {
                 </button>
               </div>
             ) : (
-              <button
-                onClick={connectStellarWallet}
-                disabled={isLoading}
-                className="px-3 py-1 bg-purple-600 hover:bg-purple-700 disabled:bg-gray-600 text-white rounded-md"
-              >
-                {isLoading ? "Connecting..." : "Connect XLM"}
-              </button>
+              <div className="flex items-center gap-1">
+                <button
+                  onClick={connectStellarWallet}
+                  disabled={isLoading}
+                  className="px-3 py-1 bg-purple-600 hover:bg-purple-700 disabled:bg-gray-600 text-white rounded-md transition-colors"
+                >
+                  {isLoading ? "Connecting..." : "Connect XLM"}
+                </button>
+                <button
+                  onClick={handleDebugFreighter}
+                  className="px-2 py-1 bg-gray-600 hover:bg-gray-700 text-white rounded-md text-xs"
+                  title="Debug Freighter connection"
+                >
+                  🐛
+                </button>
+              </div>
             )}
           </div>
         </div>

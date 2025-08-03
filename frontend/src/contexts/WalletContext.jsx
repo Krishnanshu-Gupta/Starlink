@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect } from "react";
+import React, { createContext, useContext, useState, useEffect, useRef } from "react";
 import { ethers } from "ethers";
 import { getPublicKey, signTransaction, isConnected } from "@stellar/freighter-api";
 
@@ -35,6 +35,10 @@ export function WalletProvider({ children }) {
 
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState("");
+
+  // Refs for managing intervals and timeouts
+  const freighterCheckInterval = useRef(null);
+  const freighterConnectionTimeout = useRef(null);
 
   // — Ethereum (MetaMask) —
   const connectEthWallet = async () => {
@@ -119,37 +123,155 @@ export function WalletProvider({ children }) {
     return sent.wait();
   };
 
+  // Lock ETH in HTLC
+  const lockEth = async (swapId, amount) => {
+    try {
+      if (!ethereumAccount) {
+        throw new Error("Ethereum wallet not connected");
+      }
+
+      // Get swap details from backend
+      const swapResponse = await fetch(`http://localhost:3001/api/swap/status/${swapId}`);
+      const swapData = await swapResponse.json();
+
+      if (!swapData.swap) {
+        throw new Error("Swap not found");
+      }
+
+      // Create transaction data for HTLC contract
+      const htlcContract = new ethers.Contract(
+        "0x6c91739cbC4c9e4F1907Cc11AC8431ca1a55d0C6", // HTLC contract address
+        [
+          "function lockETH(address recipient, bytes32 hash, uint256 timelock) external payable"
+        ],
+        ethereumProvider
+      );
+
+      // Create transaction
+      const tx = await htlcContract.lockETH.populateTransaction(
+        swapData.swap.initiator_address,
+        swapData.swap.hash,
+        swapData.swap.timelock,
+        { value: swapData.swap.eth_amount }
+      );
+
+      // Send transaction through MetaMask
+      const signer = ethereumProvider.getSigner();
+      const transaction = await signer.sendTransaction(tx);
+
+      console.log("Transaction sent:", transaction.hash);
+
+      // Wait for confirmation
+      const receipt = await transaction.wait();
+      console.log("Transaction confirmed:", receipt.hash);
+
+      // Update backend with transaction hash
+      const response = await fetch("http://localhost:3001/api/swap/lock-eth", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          swapId,
+          signature: receipt.hash // Use transaction hash as signature
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error("Failed to update swap status");
+      }
+
+      return await response.json();
+    } catch (error) {
+      console.error("Error locking ETH:", error);
+      throw error;
+    }
+  };
+
   // — Stellar (Freighter) —
-  const connectStellarWallet = async () => {
+
+  // Check if Freighter is available
+  const isFreighterAvailable = async () => {
+    try {
+      return await isConnected();
+    } catch (error) {
+      return false;
+    }
+  };
+
+  // Enhanced Freighter connection with better error handling and retry logic
+  const connectStellarWallet = async (retryCount = 0) => {
     setIsLoading(true);
     setError("");
+
     try {
-      const installed = await isConnected();
+      // Clear any existing timeout
+      if (freighterConnectionTimeout.current) {
+        clearTimeout(freighterConnectionTimeout.current);
+      }
+
+      const installed = await isFreighterAvailable();
       if (!installed) {
-        throw new Error("Freighter extension not available.");
+        throw new Error("Freighter extension not available. Please install Freighter from https://www.freighter.app/");
       }
-      const address = await getPublicKey();
-      if (!address) {
-        throw new Error("Failed to get Stellar address from Freighter.");
-      }
-      const resp = await fetch(
-        `http://localhost:3001/api/wallet/xlm/balance/${address}`
-      );
-      if (!resp.ok) {
-        let errMsg;
+
+      // Set a timeout for the connection attempt
+      const connectionPromise = new Promise(async (resolve, reject) => {
         try {
-          const errData = await resp.json();
-          errMsg = errData.error;
-        } catch {
-          errMsg = await resp.text();
+          const address = await getPublicKey();
+          if (!address) {
+            throw new Error("Failed to get Stellar address from Freighter. Please make sure Freighter is unlocked.");
+          }
+
+          const resp = await fetch(
+            `http://localhost:3001/api/wallet/xlm/balance/${address}`
+          );
+          if (!resp.ok) {
+            let errMsg;
+            try {
+              const errData = await resp.json();
+              errMsg = errData.error;
+            } catch {
+              errMsg = await resp.text();
+            }
+            throw new Error(errMsg || "Failed to fetch Stellar balance");
+          }
+          const data = await resp.json();
+          setStellarWallet({ address, balance: data.balance, isConnected: true });
+          localStorage.setItem("stellarConnected", "true");
+          resolve();
+        } catch (error) {
+          reject(error);
         }
-        throw new Error(errMsg || "Failed to fetch Stellar balance");
+      });
+
+      // Set timeout for connection attempt
+      freighterConnectionTimeout.current = setTimeout(() => {
+        throw new Error("Freighter connection timed out. Please try again.");
+      }, 10000); // 10 second timeout
+
+      await connectionPromise;
+
+      // Clear timeout on successful connection
+      if (freighterConnectionTimeout.current) {
+        clearTimeout(freighterConnectionTimeout.current);
+        freighterConnectionTimeout.current = null;
       }
-      const data = await resp.json();
-      setStellarWallet({ address, balance: data.balance, isConnected: true });
-      localStorage.setItem("stellarConnected", "true");
+
+      // Start periodic connection check
+      startFreighterConnectionCheck();
+
     } catch (err) {
       console.error("Error connecting to Stellar wallet:", err);
+
+      // Retry logic for certain errors
+      if (retryCount < 2 && (
+        err.message.includes("Freighter extension not available") ||
+        err.message.includes("Failed to get Stellar address") ||
+        err.message.includes("timed out")
+      )) {
+        setTimeout(() => connectStellarWallet(retryCount + 1), 1000);
+        return;
+      }
+
       setError(err.message || String(err));
     } finally {
       setIsLoading(false);
@@ -159,6 +281,12 @@ export function WalletProvider({ children }) {
   const disconnectStellarWallet = () => {
     localStorage.removeItem("stellarConnected");
     setStellarWallet({ address: "", balance: "0", isConnected: false });
+
+    // Stop periodic connection check
+    if (freighterCheckInterval.current) {
+      clearInterval(freighterCheckInterval.current);
+      freighterCheckInterval.current = null;
+    }
   };
 
   const signStellarTransaction = async xdr => {
@@ -166,6 +294,52 @@ export function WalletProvider({ children }) {
       throw new Error("Stellar wallet not connected");
     }
     return await signTransaction(xdr, { network: "TESTNET" });
+  };
+
+  // Periodic connection check for Freighter
+  const startFreighterConnectionCheck = () => {
+    // Clear any existing interval
+    if (freighterCheckInterval.current) {
+      clearInterval(freighterCheckInterval.current);
+    }
+
+    // Check connection every 5 seconds
+    freighterCheckInterval.current = setInterval(async () => {
+      if (stellarWallet.isConnected) {
+        try {
+          const isStillConnected = await isFreighterAvailable();
+          if (!isStillConnected) {
+            disconnectStellarWallet();
+          }
+        } catch (error) {
+          disconnectStellarWallet();
+        }
+      }
+    }, 5000);
+  };
+
+  // Auto-reconnect Freighter when it becomes available
+  const attemptFreighterReconnect = async () => {
+    if (stellarInitiallyConnected && !stellarWallet.isConnected && !isLoading) {
+      try {
+        const isAvailable = await isFreighterAvailable();
+        if (isAvailable) {
+          await connectStellarWallet();
+        }
+      } catch (error) {
+        // Silently fail, will retry on next interval
+      }
+    }
+  };
+
+  // Manual Freighter status check
+  const checkFreighterStatus = async () => {
+    try {
+      const isAvailable = await isFreighterAvailable();
+      return isAvailable;
+    } catch (error) {
+      return false;
+    }
   };
 
   // — Utilities —
@@ -196,18 +370,49 @@ export function WalletProvider({ children }) {
 
   const checkWalletAvailability = () => ({
     hasMetaMask: !!window.ethereum,
-    hasFreighter:
-      typeof window.freighterApi !== "undefined"
+    hasFreighter: typeof window.freighterApi !== "undefined"
   });
 
   // Auto-connect on mount
   useEffect(() => {
+    // Ethereum auto-connect
     if (window.ethereum && window.ethereum.selectedAddress) {
       connectEthWallet();
     }
+
+    // Stellar auto-connect with enhanced logic
     if (stellarInitiallyConnected) {
-      connectStellarWallet();
+      const initStellarConnection = async () => {
+        try {
+          const isAvailable = await isFreighterAvailable();
+          if (isAvailable) {
+            await connectStellarWallet();
+          } else {
+            // Clear localStorage if Freighter is not available
+            localStorage.removeItem("stellarConnected");
+          }
+        } catch (error) {
+          console.error("Initial Freighter connection check failed:", error);
+          localStorage.removeItem("stellarConnected");
+        }
+      };
+
+      initStellarConnection();
     }
+
+    // Set up periodic Freighter availability check for auto-reconnect
+    const freighterAvailabilityInterval = setInterval(attemptFreighterReconnect, 3000);
+
+    // Cleanup on unmount
+    return () => {
+      if (freighterCheckInterval.current) {
+        clearInterval(freighterCheckInterval.current);
+      }
+      if (freighterConnectionTimeout.current) {
+        clearTimeout(freighterConnectionTimeout.current);
+      }
+      clearInterval(freighterAvailabilityInterval);
+    };
   }, []);
 
   return (
@@ -224,7 +429,8 @@ export function WalletProvider({ children }) {
         signEthTransaction,
         signStellarTransaction,
         refreshBalances,
-        checkWalletAvailability
+        checkWalletAvailability,
+        checkFreighterStatus
       }}
     >
       {children}

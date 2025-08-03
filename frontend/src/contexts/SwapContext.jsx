@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useCallback } from "react";
+import React, { createContext, useContext, useState, useCallback, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useWallet } from "./WalletContext.jsx";
 
@@ -21,10 +21,44 @@ export function SwapProvider({ children }) {
   // API base URL
   const API_BASE = "http://localhost:3001/api";
 
-  // Initiate a new swap
-  const initiateSwapMutation = useMutation({
+  // Sync swapStep with backend status when currentSwap changes
+  useEffect(() => {
+    if (currentSwap?.id) {
+      const syncSwapStatus = async () => {
+        try {
+          const response = await fetch(`${API_BASE}/swap/status/${currentSwap.id}`);
+          if (response.ok) {
+            const data = await response.json();
+            // Map backend status to frontend step
+            const statusToStep = {
+              "pending": "initiated",
+              "locked_eth": "locked_eth",
+              "locked_stellar": "locked_stellar",
+              "claimed_xlm": "claimed_xlm",
+              "claimed_eth": "claimed_eth",
+              "completed": "completed"
+            };
+            setSwapStep(statusToStep[data.status] || "initiated");
+          }
+        } catch (error) {
+          console.error("Failed to sync swap status:", error);
+        }
+      };
+
+      // Initial sync
+      syncSwapStatus();
+
+      // Poll every 5 seconds for status updates
+      const interval = setInterval(syncSwapStatus, 5000);
+
+      return () => clearInterval(interval);
+    }
+  }, [currentSwap?.id]);
+
+  // Initiate ETH to XLM swap
+  const initiateEthToXlmSwap = useMutation({
     mutationFn: async (swapData) => {
-      const response = await fetch(`${API_BASE}/swap/initiate`, {
+      const response = await fetch(`${API_BASE}/swap/initiate-eth`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -32,49 +66,80 @@ export function SwapProvider({ children }) {
         body: JSON.stringify({
           initiatorAddress: ethWallet.address,
           recipientAddress: stellarWallet.address,
-          amount: swapData.ethAmount,
-          stellarAmount: swapData.xlmAmount,
+          ethAmount: swapData.ethAmount,
+          xlmAmount: swapData.xlmAmount,
           timelockMinutes: swapData.timelockMinutes || 30,
         }),
       });
 
       if (!response.ok) {
         const error = await response.json();
-        throw new Error(error.error || "Failed to initiate swap");
+        throw new Error(error.error || "Failed to initiate ETH to XLM swap");
       }
 
       return response.json();
     },
     onSuccess: (data) => {
-      setCurrentSwap(data);
-      setSwapStep("locked_eth");
+      setCurrentSwap({
+        ...data,
+        id: data.swapId, // Map swapId to id for consistency
+        swapId: data.swapId
+      });
+      setSwapStep("initiated");
       queryClient.invalidateQueries(["swaps"]);
     },
     onError: (error) => {
-      console.error("Error initiating swap:", error);
+      console.error("Error initiating ETH to XLM swap:", error);
+    },
+  });
+
+  // Initiate XLM to ETH swap
+  const initiateXlmToEthSwap = useMutation({
+    mutationFn: async (swapData) => {
+      const response = await fetch(`${API_BASE}/swap/initiate-xlm`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          initiatorAddress: stellarWallet.address,
+          recipientAddress: ethWallet.address,
+          xlmAmount: swapData.xlmAmount,
+          ethAmount: swapData.ethAmount,
+          timelockMinutes: swapData.timelockMinutes || 30,
+        }),
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.error || "Failed to initiate XLM to ETH swap");
+      }
+
+      return response.json();
+    },
+    onSuccess: (data) => {
+      setCurrentSwap({
+        ...data,
+        id: data.swapId, // Map swapId to id for consistency
+        swapId: data.swapId
+      });
+      setSwapStep("initiated");
+      queryClient.invalidateQueries(["swaps"]);
+    },
+    onError: (error) => {
+      console.error("Error initiating XLM to ETH swap:", error);
     },
   });
 
   // Lock ETH
   const lockEthMutation = useMutation({
-    mutationFn: async ({ swapId, signature }) => {
-      const response = await fetch(`${API_BASE}/swap/lock-eth`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ swapId, signature }),
-      });
-
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.error || "Failed to lock ETH");
-      }
-
-      return response.json();
+    mutationFn: async ({ swapId }) => {
+      // Use the real lockEth function from WalletContext
+      const { lockEth } = useWallet();
+      return await lockEth(swapId);
     },
     onSuccess: (data) => {
-      setSwapStep("locked_stellar");
+      setSwapStep("locked_eth");
       queryClient.invalidateQueries(["swap", currentSwap?.swapId]);
     },
     onError: (error) => {
@@ -101,7 +166,7 @@ export function SwapProvider({ children }) {
       return response.json();
     },
     onSuccess: (data) => {
-      setSwapStep("ready_to_claim");
+      setSwapStep("locked_stellar");
       queryClient.invalidateQueries(["swap", currentSwap?.swapId]);
     },
     onError: (error) => {
@@ -134,6 +199,60 @@ export function SwapProvider({ children }) {
     },
     onError: (error) => {
       console.error("Error claiming funds:", error);
+    },
+  });
+
+  // Claim XLM
+  const claimXlmMutation = useMutation({
+    mutationFn: async ({ swapId, secret }) => {
+      const response = await fetch(`${API_BASE}/swap/claim-xlm`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ swapId, secret }),
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.error || "Failed to claim XLM");
+      }
+
+      return response.json();
+    },
+    onSuccess: (data) => {
+      setSwapStep("claimed_xlm");
+      queryClient.invalidateQueries(["swap", currentSwap?.swapId]);
+    },
+    onError: (error) => {
+      console.error("Error claiming XLM:", error);
+    },
+  });
+
+  // Claim ETH (called by relayer)
+  const claimEthMutation = useMutation({
+    mutationFn: async ({ swapId, secret }) => {
+      const response = await fetch(`${API_BASE}/swap/claim-eth`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ swapId, secret }),
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.error || "Failed to claim ETH");
+      }
+
+      return response.json();
+    },
+    onSuccess: (data) => {
+      setSwapStep("completed");
+      queryClient.invalidateQueries(["swap", currentSwap?.swapId]);
+    },
+    onError: (error) => {
+      console.error("Error claiming ETH:", error);
     },
   });
 
@@ -216,31 +335,44 @@ export function SwapProvider({ children }) {
   }, []);
 
   // Validate swap parameters
-  const validateSwapParams = useCallback((ethAmount, xlmAmount, timelockMinutes) => {
+  const validateSwapParams = useCallback((direction, amount, timelockMinutes) => {
     const errors = [];
 
-    if (!ethAmount || parseFloat(ethAmount) <= 0) {
-      errors.push("ETH amount must be greater than 0");
-    }
-
-    if (!xlmAmount || parseFloat(xlmAmount) <= 0) {
-      errors.push("XLM amount must be greater than 0");
-    }
-
-    if (timelockMinutes && (timelockMinutes < 5 || timelockMinutes > 1440)) {
-      errors.push("Timelock must be between 5 minutes and 24 hours");
-    }
-
+    // Check wallet connections
     if (!ethWallet.isConnected) {
-      errors.push("Ethereum wallet must be connected");
+      errors.push("Ethereum wallet not connected");
+    }
+    if (!stellarWallet.isConnected) {
+      errors.push("Stellar wallet not connected");
     }
 
-    if (!stellarWallet.isConnected) {
-      errors.push("Stellar wallet must be connected");
+    // Check amount
+    if (!amount || parseFloat(amount) <= 0) {
+      errors.push("Amount must be greater than 0");
+    }
+
+    // Check balances
+    if (direction === "ETH_TO_XLM") {
+      const ethBalance = parseFloat(ethWallet.balance || 0);
+      const ethAmount = parseFloat(amount);
+      if (ethAmount > ethBalance) {
+        errors.push(`Insufficient ETH balance. You have ${ethBalance.toFixed(4)} ETH`);
+      }
+    } else {
+      const xlmBalance = parseFloat(stellarWallet.balance || 0);
+      const xlmAmount = parseFloat(amount);
+      if (xlmAmount > xlmBalance) {
+        errors.push(`Insufficient XLM balance. You have ${xlmBalance.toFixed(2)} XLM`);
+      }
+    }
+
+    // Check timelock
+    if (timelockMinutes < 5 || timelockMinutes > 1440) {
+      errors.push("Timelock must be between 5 and 1440 minutes");
     }
 
     return errors;
-  }, [ethWallet.isConnected, stellarWallet.isConnected]);
+  }, [ethWallet, stellarWallet]);
 
   // Reset swap state
   const resetSwap = useCallback(() => {
@@ -252,6 +384,7 @@ export function SwapProvider({ children }) {
   const getSwapStepDescription = useCallback((step) => {
     const descriptions = {
       init: "Initialize swap",
+      initiated: "Swap initiated",
       locked_eth: "ETH locked, waiting for XLM lock",
       locked_stellar: "XLM locked, ready to claim",
       ready_to_claim: "Ready to claim funds",
@@ -262,26 +395,25 @@ export function SwapProvider({ children }) {
     return descriptions[step] || "Unknown step";
   }, []);
 
-  const value = {
-    currentSwap,
-    swapStep,
-    setSwapStep,
-    initiateSwapMutation,
-    lockEthMutation,
-    lockXlmMutation,
-    claimMutation,
-    refundMutation,
-    getSwapStatus,
-    getSwapHistory,
-    getAllSwaps,
-    calculateExchangeRate,
-    validateSwapParams,
-    resetSwap,
-    getSwapStepDescription,
-  };
-
   return (
-    <SwapContext.Provider value={value}>
+    <SwapContext.Provider
+      value={{
+        currentSwap,
+        swapStep,
+        setSwapStep,
+        initiateEthToXlmSwap,
+        initiateXlmToEthSwap,
+        lockEthMutation,
+        lockXlmMutation,
+        claimXlmMutation,
+        claimEthMutation,
+        refundMutation,
+        getSwapStatus,
+        getSwapHistory,
+        validateSwapParams,
+        resetSwap,
+      }}
+    >
       {children}
     </SwapContext.Provider>
   );

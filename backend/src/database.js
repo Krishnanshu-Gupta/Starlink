@@ -19,27 +19,26 @@ export async function createDatabase() {
 }
 
 export async function initializeTables() {
-  // Swaps table - stores all swap information
+  // Swaps table - stores all swap information for bidirectional HTLC swaps
   await db.exec(`
     CREATE TABLE IF NOT EXISTS swaps (
       id TEXT PRIMARY KEY,
+      direction TEXT NOT NULL CHECK (direction IN ('ETH_TO_XLM', 'XLM_TO_ETH')),
       initiator_address TEXT NOT NULL,
       recipient_address TEXT NOT NULL,
-      token_address TEXT NOT NULL,
-      amount TEXT NOT NULL,
-      hash_hex TEXT NOT NULL,
-      secret_hex TEXT NOT NULL,
+      eth_amount TEXT NOT NULL,
+      xlm_amount TEXT NOT NULL,
+      secret TEXT NOT NULL,
+      hash TEXT NOT NULL,
       timelock INTEGER NOT NULL,
-      status TEXT DEFAULT 'pending',
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      stellar_escrow_public TEXT,
-      stellar_escrow_secret TEXT,
-      ethereum_swap_id TEXT,
+      status TEXT DEFAULT 'pending' CHECK (status IN ('pending', 'locked_eth', 'locked_stellar', 'claimed_xlm', 'claimed_eth', 'completed', 'refunded')),
       ethereum_tx_hash TEXT,
+      resolver_swap_id TEXT,
       stellar_tx_hash TEXT,
+      escrow_address TEXT,
       claim_tx_hash TEXT,
-      refund_tx_hash TEXT
+      created_at INTEGER DEFAULT (strftime('%s', 'now')),
+      updated_at INTEGER DEFAULT (strftime('%s', 'now'))
     )
   `);
 
@@ -70,9 +69,26 @@ export async function initializeTables() {
     )
   `);
 
+  // Create resolver_locks table for partial fills
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS resolver_locks (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      swap_id TEXT NOT NULL,
+      resolver_id TEXT NOT NULL,
+      amount REAL NOT NULL,
+      escrow_address TEXT,
+      stellar_tx_hash TEXT,
+      claim_tx_hash TEXT,
+      status TEXT DEFAULT 'pending',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (swap_id) REFERENCES swaps (id)
+    )
+  `);
+
   // Create indexes for better performance
   await db.exec(`
     CREATE INDEX IF NOT EXISTS idx_swaps_status ON swaps(status);
+    CREATE INDEX IF NOT EXISTS idx_swaps_direction ON swaps(direction);
     CREATE INDEX IF NOT EXISTS idx_swaps_initiator ON swaps(initiator_address);
     CREATE INDEX IF NOT EXISTS idx_swaps_recipient ON swaps(recipient_address);
     CREATE INDEX IF NOT EXISTS idx_transactions_swap_id ON transactions(swap_id);

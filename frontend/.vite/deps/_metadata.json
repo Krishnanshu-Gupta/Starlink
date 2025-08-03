@@ -1,0 +1,55 @@
+{
+  "hash": "104fdd13",
+  "configHash": "caff85c7",
+  "lockfileHash": "da618329",
+  "browserHash": "8a5c8d08",
+  "optimized": {
+    "react": {
+      "src": "../../node_modules/react/index.js",
+      "file": "react.js",
+      "fileHash": "f3a3443d",
+      "needsInterop": true
+    },
+    "react-dom/client": {
+      "src": "../../node_modules/react-dom/client.js",
+      "file": "react-dom_client.js",
+      "fileHash": "8d56f11f",
+      "needsInterop": true
+    },
+    "react-router-dom": {
+      "src": "../../node_modules/react-router-dom/dist/index.js",
+      "file": "react-router-dom.js",
+      "fileHash": "653f6cae",
+      "needsInterop": false
+    },
+    "@tanstack/react-query": {
+      "src": "../../node_modules/@tanstack/react-query/build/modern/index.js",
+      "file": "@tanstack_react-query.js",
+      "fileHash": "51a6f804",
+      "needsInterop": false
+    },
+    "ethers": {
+      "src": "../../node_modules/ethers/lib.esm/index.js",
+      "file": "ethers.js",
+      "fileHash": "52452619",
+      "needsInterop": false
+    },
+    "@stellar/freighter-api": {
+      "src": "../../node_modules/@stellar/freighter-api/build/index.min.js",
+      "file": "@stellar_freighter-api.js",
+      "fileHash": "3b3d1e8d",
+      "needsInterop": true
+    }
+  },
+  "chunks": {
+    "chunk-PV7ZWGTI": {
+      "file": "chunk-PV7ZWGTI.js"
+    },
+    "chunk-2CLD7BNN": {
+      "file": "chunk-2CLD7BNN.js"
+    },
+    "chunk-WOOG5QLI": {
+      "file": "chunk-WOOG5QLI.js"
+    }
+  }
+}

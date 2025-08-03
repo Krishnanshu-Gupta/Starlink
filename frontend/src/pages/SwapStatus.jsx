@@ -4,12 +4,20 @@ import { useSwap } from "../contexts/SwapContext.jsx";
 import { useWallet } from "../contexts/WalletContext.jsx";
 import { Link } from "react-router-dom";
 
-export default function SwapStatus() {
+export default function SwapStatus({ swap: propSwap }) {
   const { swapId } = useParams();
-  const { getSwapStatus, claimMutation, refundMutation } = useSwap();
+  const { getSwapStatus, claimXlmMutation, claimEthMutation, refundMutation } = useSwap();
   const { ethWallet, stellarWallet } = useWallet();
 
-  const { data: swapData, isLoading, error } = getSwapStatus(swapId);
+  // If we have a prop swap, use it directly, otherwise fetch by ID
+  const { data: swapData, isLoading, error } = propSwap ?
+    { data: { swap: propSwap, status: propSwap.status, canClaim: false, canRefund: false }, isLoading: false, error: null } :
+    getSwapStatus(swapId);
+
+  // Debug logging
+  if (propSwap) {
+    console.log("SwapStatus received propSwap:", propSwap);
+  }
 
   if (isLoading) {
     return (
@@ -24,7 +32,7 @@ export default function SwapStatus() {
     );
   }
 
-  if (error || !swapData) {
+  if (error || !swapData || !swapData.swap) {
     return (
       <div className="max-w-2xl mx-auto">
         <div className="bg-gray-800/50 backdrop-blur-sm border border-gray-700 rounded-xl p-6">
@@ -43,11 +51,11 @@ export default function SwapStatus() {
     );
   }
 
-  const { swap, transactions, status, canClaim, canRefund } = swapData;
+  const { swap, status, canClaim, canRefund } = swapData;
 
   const getStepStatus = (step) => {
-    const stepOrder = ["pending", "locked_eth", "locked_stellar", "claimed_stellar", "claimed_eth", "completed"];
-    const currentIndex = stepOrder.indexOf(status);
+    const stepOrder = ["pending", "locked_eth", "locked_stellar", "claimed_xlm", "claimed_eth", "completed"];
+    const currentIndex = stepOrder.indexOf(swap.status || "pending");
     const stepIndex = stepOrder.indexOf(step);
 
     if (stepIndex < currentIndex) return "completed";
@@ -72,10 +80,9 @@ export default function SwapStatus() {
 
   const handleClaim = async () => {
     try {
-      await claimMutation.mutateAsync({
+      await claimXlmMutation.mutateAsync({
         swapId: swap.id,
-        secretHex: swap.secret_hex,
-        chain: "stellar"
+        secret: swap.secret
       });
     } catch (error) {
       console.error("Failed to claim:", error);
@@ -103,11 +110,11 @@ export default function SwapStatus() {
             <p className="text-gray-400">ID: {swap.id}</p>
           </div>
           <div className={`px-3 py-1 rounded-full text-sm font-medium ${
-            status === "completed" ? "bg-green-900/50 text-green-300" :
-            status === "failed" ? "bg-red-900/50 text-red-300" :
+            (swap.status || "pending") === "completed" ? "bg-green-900/50 text-green-300" :
+            (swap.status || "pending") === "failed" ? "bg-red-900/50 text-red-300" :
             "bg-yellow-900/50 text-yellow-300"
           }`}>
-            {status.replace("_", " ").toUpperCase()}
+            {(swap.status || "pending").replace("_", " ").toUpperCase()}
           </div>
         </div>
 
@@ -119,7 +126,7 @@ export default function SwapStatus() {
               { step: "pending", label: "Swap Initiated", description: "Swap created and ready to begin" },
               { step: "locked_eth", label: "ETH Locked", description: "Ethereum funds locked in HTLC" },
               { step: "locked_stellar", label: "XLM Locked", description: "Stellar funds locked in escrow" },
-              { step: "claimed_stellar", label: "XLM Claimed", description: "Stellar funds claimed successfully" },
+              { step: "claimed_xlm", label: "XLM Claimed", description: "Stellar funds claimed successfully" },
               { step: "claimed_eth", label: "ETH Claimed", description: "Ethereum funds claimed automatically" },
               { step: "completed", label: "Swap Completed", description: "Atomic swap completed successfully" }
             ].map((item, index) => {
@@ -161,6 +168,10 @@ export default function SwapStatus() {
             <h3 className="text-lg font-semibold text-white mb-3">Swap Details</h3>
             <div className="space-y-2 text-sm">
               <div className="flex justify-between">
+                <span className="text-gray-400">Direction:</span>
+                <span className="text-white">{swap.direction}</span>
+              </div>
+              <div className="flex justify-between">
                 <span className="text-gray-400">Initiator:</span>
                 <span className="text-white font-mono">{formatAddress(swap.initiator_address)}</span>
               </div>
@@ -170,7 +181,11 @@ export default function SwapStatus() {
               </div>
               <div className="flex justify-between">
                 <span className="text-gray-400">ETH Amount:</span>
-                <span className="text-white">{formatAmount(swap.amount)} ETH</span>
+                <span className="text-white">{formatAmount(swap.eth_amount)} ETH</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-gray-400">XLM Amount:</span>
+                <span className="text-white">{formatAmount(swap.xlm_amount, 7)} XLM</span>
               </div>
               <div className="flex justify-between">
                 <span className="text-gray-400">Timelock:</span>
@@ -184,66 +199,29 @@ export default function SwapStatus() {
           </div>
 
           <div className="bg-gray-700/50 rounded-lg p-4">
-            <h3 className="text-lg font-semibold text-white mb-3">Transaction Hashes</h3>
+            <h3 className="text-lg font-semibold text-white mb-3">Transaction Info</h3>
             <div className="space-y-2 text-sm">
               <div className="flex justify-between">
-                <span className="text-gray-400">ETH Lock:</span>
-                <span className="text-white font-mono">{formatAddress(swap.ethereum_tx_hash)}</span>
+                <span className="text-gray-400">Swap ID:</span>
+                <span className="text-white font-mono">{formatAddress(swap.id)}</span>
               </div>
               <div className="flex justify-between">
-                <span className="text-gray-400">XLM Lock:</span>
-                <span className="text-white font-mono">{formatAddress(swap.stellar_tx_hash)}</span>
+                <span className="text-gray-400">Hash:</span>
+                <span className="text-white font-mono">{formatAddress(swap.hash)}</span>
               </div>
               <div className="flex justify-between">
-                <span className="text-gray-400">XLM Claim:</span>
-                <span className="text-white font-mono">{formatAddress(swap.claim_tx_hash)}</span>
+                <span className="text-gray-400">Status:</span>
+                <span className="text-white">{swap.status}</span>
               </div>
-              <div className="flex justify-between">
-                <span className="text-gray-400">ETH Claim:</span>
-                <span className="text-white font-mono">{formatAddress(swap.ethereum_swap_id)}</span>
-              </div>
+              {swap.escrow_address && (
+                <div className="flex justify-between">
+                  <span className="text-gray-400">Escrow:</span>
+                  <span className="text-white font-mono">{formatAddress(swap.escrow_address)}</span>
+                </div>
+              )}
             </div>
           </div>
         </div>
-
-        {/* Transaction History */}
-        {transactions && transactions.length > 0 && (
-          <div className="mb-8">
-            <h2 className="text-lg font-semibold text-white mb-4">Transaction History</h2>
-            <div className="bg-gray-700/50 rounded-lg overflow-hidden">
-              <table className="w-full">
-                <thead className="bg-gray-600/50">
-                  <tr>
-                    <th className="px-4 py-2 text-left text-sm font-medium text-gray-300">Chain</th>
-                    <th className="px-4 py-2 text-left text-sm font-medium text-gray-300">Type</th>
-                    <th className="px-4 py-2 text-left text-sm font-medium text-gray-300">Status</th>
-                    <th className="px-4 py-2 text-left text-sm font-medium text-gray-300">Hash</th>
-                    <th className="px-4 py-2 text-left text-sm font-medium text-gray-300">Time</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {transactions.map((tx, index) => (
-                    <tr key={index} className="border-t border-gray-600">
-                      <td className="px-4 py-2 text-sm text-white">{tx.chain}</td>
-                      <td className="px-4 py-2 text-sm text-white">{tx.tx_type}</td>
-                      <td className="px-4 py-2">
-                        <span className={`px-2 py-1 rounded-full text-xs font-medium ${
-                          tx.status === "confirmed" ? "bg-green-900/50 text-green-300" :
-                          tx.status === "failed" ? "bg-red-900/50 text-red-300" :
-                          "bg-yellow-900/50 text-yellow-300"
-                        }`}>
-                          {tx.status}
-                        </span>
-                      </td>
-                      <td className="px-4 py-2 text-sm font-mono text-gray-300">{formatAddress(tx.tx_hash)}</td>
-                      <td className="px-4 py-2 text-sm text-gray-300">{formatTimestamp(tx.created_at)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        )}
 
         {/* Action Buttons */}
         <div className="flex items-center justify-between">
@@ -258,10 +236,10 @@ export default function SwapStatus() {
             {canClaim && (
               <button
                 onClick={handleClaim}
-                disabled={claimMutation.isPending}
+                disabled={claimXlmMutation.isPending}
                 className="bg-green-600 hover:bg-green-700 disabled:bg-gray-600 text-white px-4 py-2 rounded-lg transition-colors"
               >
-                {claimMutation.isPending ? "Claiming..." : "Claim XLM"}
+                {claimXlmMutation.isPending ? "Claiming..." : "Claim XLM"}
               </button>
             )}
 
