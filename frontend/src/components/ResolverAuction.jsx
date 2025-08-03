@@ -76,9 +76,6 @@ const ResolverAuction = ({ swapId, onBidSubmitted }) => {
                       <span className="ml-2 text-purple-400">{stats.bidCount}</span>
                     </div>
                   </div>
-                  <div className="text-xs text-gray-500 mt-2">
-                    Success Rate: {(stats.successRate * 100).toFixed(0)}% • Response: {stats.avgResponseTime}ms
-                  </div>
                 </div>
               ))}
             </div>
@@ -148,9 +145,6 @@ const ResolverAuction = ({ swapId, onBidSubmitted }) => {
                   <span className="text-gray-400">Bids:</span>
                   <span className="ml-2 text-purple-400">{stats.bidCount}</span>
                 </div>
-              </div>
-              <div className="text-xs text-gray-500 mt-2">
-                Success Rate: {(stats.successRate * 100).toFixed(0)}% • Response: {stats.avgResponseTime}ms
               </div>
             </div>
           ))}

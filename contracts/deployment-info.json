@@ -1,0 +1,9 @@
+{
+  "network": "sepolia",
+  "contracts": {
+    "HTLC": "0x3bb9Be9BF982E1A3743097A538059829b0e753FB",
+    "Resolver": "0x7cEdc8aa8cba26aA1C14CeBe82Fc34bE2d84Fcb0",
+    "TestEscrowFactory": "0x7Cf5cd365721F2c4491737D5e1415650aD0e80c8"
+  },
+  "deploymentTime": "2025-08-03T14:20:00.000Z"
+}

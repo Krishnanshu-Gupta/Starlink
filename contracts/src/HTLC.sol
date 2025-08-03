@@ -53,6 +53,8 @@ contract HTLC {
         emit Claimed(id, preimage);
     }
 
+
+
     function refund(bytes32 id) external {
         Swap storage s = swaps[id];
         require(msg.sender == s.sender, "Not sender");

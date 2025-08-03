@@ -1,0 +1,15 @@
+q
+curl -X POST -H "Content-Type: application/json" --data '{"jsonrpc":"2.0","method":"eth_getTransactionReceipt","params":["0xd0141c55fbd124ee713d3c2dde49e4edb79038bfe08c3445cfa3318ffa12eb86"],"id":1}' https://sepolia.infura.io/v3/04944e1b094c4f93ad909a10bcff6803
+q
+cd /Users/krishnanshugupta/ETHGlobal/backend && ls -la
+q
+ps aux | grep "node.*backend" | grep -v grep
+q
+ps aux | grep node
+q
+cd /Users/krishnanshugupta/ETHGlobal/backend && node -e "console.log('Testing ethers import...'); const { ethers } = require('ethers'); console.log('ethers imported successfully');"
+q
+cd /Users/krishnanshugupta/ETHGlobal/backend && node test-contract.js
+q
+cd /Users/krishnanshugupta/ETHGlobal/backend && node test-contract.js
+q

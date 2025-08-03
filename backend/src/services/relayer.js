@@ -173,7 +173,7 @@ async function startStellarMonitoring() {
       .cursor("now")
       .stream({
         onmessage: (ledger) => {
-          console.log(`📊 New ledger: ${ledger.sequence}`);
+          //console.log(`📊 New ledger: ${ledger.sequence}`);
         },
         onerror: (error) => {
           console.error("❌ Stellar ledger stream error:", error);

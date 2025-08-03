@@ -33,6 +33,7 @@ export async function initializeTables() {
       timelock INTEGER NOT NULL,
       status TEXT DEFAULT 'pending' CHECK (status IN ('pending', 'locked_eth', 'locked_stellar', 'claimed_xlm', 'claimed_eth', 'completed', 'refunded')),
       ethereum_tx_hash TEXT,
+      factory_swap_id TEXT,
       resolver_swap_id TEXT,
       stellar_tx_hash TEXT,
       escrow_address TEXT,
@@ -85,6 +86,41 @@ export async function initializeTables() {
     )
   `);
 
+  // Create swap_contracts table for 10-contract system
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS swap_contracts (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      swap_id TEXT NOT NULL,
+      contract_index INTEGER NOT NULL CHECK (contract_index >= 0 AND contract_index < 10),
+      contract_address TEXT NOT NULL,
+      resolver_id TEXT,
+      claim_tx_hash TEXT,
+      status TEXT DEFAULT 'created' CHECK (status IN ('created', 'claimed', 'failed')),
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      claimed_at DATETIME,
+      FOREIGN KEY (swap_id) REFERENCES swaps (id),
+      FOREIGN KEY (resolver_id) REFERENCES resolver_locks (resolver_id),
+      UNIQUE(swap_id, contract_index)
+    )
+  `);
+
+  // Create contract_claims table for tracking real contract claims
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS contract_claims (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      swap_id TEXT NOT NULL,
+      resolver_id TEXT NOT NULL,
+      contract_index INTEGER NOT NULL CHECK (contract_index >= 0 AND contract_index < 10),
+      transaction_hash TEXT,
+      status TEXT DEFAULT 'pending' CHECK (status IN ('pending', 'claimed', 'failed')),
+      gas_used TEXT,
+      error_message TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      claimed_at DATETIME,
+      FOREIGN KEY (swap_id) REFERENCES swaps (id)
+    )
+  `);
+
   // Create indexes for better performance
   await db.exec(`
     CREATE INDEX IF NOT EXISTS idx_swaps_status ON swaps(status);
@@ -92,6 +128,8 @@ export async function initializeTables() {
     CREATE INDEX IF NOT EXISTS idx_swaps_initiator ON swaps(initiator_address);
     CREATE INDEX IF NOT EXISTS idx_swaps_recipient ON swaps(recipient_address);
     CREATE INDEX IF NOT EXISTS idx_transactions_swap_id ON transactions(swap_id);
+    CREATE INDEX IF NOT EXISTS idx_swap_contracts_swap_id ON swap_contracts(swap_id);
+    CREATE INDEX IF NOT EXISTS idx_swap_contracts_status ON swap_contracts(status);
   `);
 
   console.log("📋 Database tables initialized");
@@ -177,4 +215,83 @@ export async function getTransactions(swapId) {
     WHERE swap_id = ?
     ORDER BY created_at ASC
   `, [swapId]);
+}
+
+// New helper functions for 10-contract system
+export async function createSwapContracts(swapId, contractAddresses) {
+  const db = await getDatabase();
+
+  for (let i = 0; i < contractAddresses.length; i++) {
+    await db.run(`
+      INSERT INTO swap_contracts (
+        swap_id, contract_index, contract_address, status
+      ) VALUES (?, ?, ?, ?)
+    `, [swapId, i, contractAddresses[i], "created"]);
+  }
+}
+
+export async function getSwapContracts(swapId) {
+  const db = await getDatabase();
+  return await db.all(`
+    SELECT * FROM swap_contracts
+    WHERE swap_id = ?
+    ORDER BY contract_index ASC
+  `, [swapId]);
+}
+
+export async function updateContractStatus(swapId, contractIndex, status, resolverId = null, claimTxHash = null) {
+  const db = await getDatabase();
+
+  const updates = [];
+  const values = [];
+
+  if (resolverId) {
+    updates.push("resolver_id = ?");
+    values.push(resolverId);
+  }
+
+  if (claimTxHash) {
+    updates.push("claim_tx_hash = ?");
+    values.push(claimTxHash);
+  }
+
+  if (status === "claimed") {
+    updates.push("claimed_at = CURRENT_TIMESTAMP");
+  }
+
+  updates.push("status = ?");
+  values.push(status);
+
+  await db.run(`
+    UPDATE swap_contracts
+    SET ${updates.join(", ")}
+    WHERE swap_id = ? AND contract_index = ?
+  `, [...values, swapId, contractIndex]);
+}
+
+export async function getAvailableContracts(swapId) {
+  const db = await getDatabase();
+  return await db.all(`
+    SELECT * FROM swap_contracts
+    WHERE swap_id = ? AND status = 'created'
+    ORDER BY contract_index ASC
+  `, [swapId]);
+}
+
+export async function getClaimedContracts(swapId) {
+  const db = await getDatabase();
+  return await db.all(`
+    SELECT * FROM swap_contracts
+    WHERE swap_id = ? AND status = 'claimed'
+    ORDER BY contract_index ASC
+  `, [swapId]);
+}
+
+export async function getContractByResolver(swapId, resolverId) {
+  const db = await getDatabase();
+  return await db.all(`
+    SELECT * FROM swap_contracts
+    WHERE swap_id = ? AND resolver_id = ?
+    ORDER BY contract_index ASC
+  `, [swapId, resolverId]);
 }

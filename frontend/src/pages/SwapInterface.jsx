@@ -41,22 +41,38 @@ export default function SwapInterface() {
 
       setRateLoading(true);
       try {
-        // Fetch real-time rates from CoinGecko
-        const response = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=ethereum,stellar&vs_currencies=usd');
+        // Fetch real-time rates from our backend proxy with timeout
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 second timeout
+
+        const response = await fetch('http://localhost:3001/api/swap/exchange-rate', {
+          signal: controller.signal,
+          headers: {
+            'Content-Type': 'application/json',
+          }
+        });
+
+        clearTimeout(timeoutId);
 
         if (!response.ok) {
-          throw new Error(`CoinGecko API error: ${response.status}`);
+          throw new Error(`Backend API error: ${response.status} ${response.statusText}`);
         }
 
-        const data = await response.json();
+        const result = await response.json();
 
-        const ethPrice = data.ethereum.usd;
-        const xlmPrice = data.stellar.usd;
+        if (!result.success) {
+          console.warn("Using fallback rates:", result.error);
+        }
 
-        // Calculate cross-rate
+        // Validate the response data
+        if (!result.data || typeof result.data.ethToXlmRate !== 'number' || typeof result.data.xlmToEthRate !== 'number') {
+          throw new Error('Invalid response format from backend API');
+        }
+
+        // Use the pre-calculated rates from backend
         const rate = swapDirection === "ETH_TO_XLM"
-          ? ethPrice / xlmPrice  // How many XLM per 1 ETH (ETH price / XLM price)
-          : xlmPrice / ethPrice; // How many ETH per 1 XLM (XLM price / ETH price)
+          ? result.data.ethToXlmRate  // How many XLM per 1 ETH
+          : result.data.xlmToEthRate; // How many ETH per 1 XLM
 
         setExchangeRate(rate);
       } catch (error) {
@@ -91,39 +107,46 @@ export default function SwapInterface() {
 
     try {
       if (swapDirection === "ETH_TO_XLM") {
-        await initiateEthToXlmSwap.mutateAsync({
+        // Initiate ETH to XLM swap
+        const swapData = await initiateEthToXlmSwap.mutateAsync({
           ethAmount: formData.amount,
           xlmAmount: (parseFloat(formData.amount) * exchangeRate).toFixed(2),
           timelockMinutes: formData.timelockMinutes
         });
 
-        // Auto-lock ETH after initiation
-        setTimeout(async () => {
-          try {
-            await handleLockEth();
-          } catch (error) {
-            console.error("Auto-lock failed:", error);
-          }
-        }, 1000); // Small delay to ensure swap is created
+        // Automatically trigger ETH locking with the swap data
+        console.log("🔄 Swap initiated, automatically locking ETH...");
+        await handleLockEth(swapData);
+
       } else {
-        await initiateXlmToEthSwap.mutateAsync({
+        // Initiate XLM to ETH swap
+        const swapData = await initiateXlmToEthSwap.mutateAsync({
           xlmAmount: formData.amount,
           ethAmount: (parseFloat(formData.amount) * exchangeRate).toFixed(6),
           timelockMinutes: formData.timelockMinutes
         });
+
+        // Automatically trigger XLM locking with the swap data
+        console.log("🔄 Swap initiated, automatically locking XLM...");
+        await handleLockXlm(swapData);
       }
+
       setShowAuction(true);
     } catch (error) {
       console.error("Failed to initiate swap:", error);
     }
   };
 
-  const handleLockEth = async () => {
-    if (!currentSwap) return;
+  const handleLockEth = async (swapData = null) => {
+    const swapToUse = swapData || currentSwap;
+    if (!swapToUse) {
+      console.error("No swap data available for ETH locking");
+      return;
+    }
 
     try {
       await lockEthMutation.mutateAsync({
-        swapId: currentSwap.swapId,
+        swapId: swapToUse.swapId,
         amount: formData.amount
       });
     } catch (error) {
@@ -131,12 +154,16 @@ export default function SwapInterface() {
     }
   };
 
-  const handleLockXlm = async () => {
-    if (!currentSwap) return;
+  const handleLockXlm = async (swapData = null) => {
+    const swapToUse = swapData || currentSwap;
+    if (!swapToUse) {
+      console.error("No swap data available for XLM locking");
+      return;
+    }
 
     try {
       await lockXlmMutation.mutateAsync({
-        swapId: currentSwap.swapId,
+        swapId: swapToUse.swapId,
         stellarAddress: stellarWallet.address,
         xlmAmount: formData.amount
       });

@@ -2,11 +2,13 @@ import { ethers } from "ethers";
 import pkg from "@stellar/stellar-sdk";
 const { Horizon, Networks, TransactionBuilder, Operation, Keypair, TimeBounds, Signer } = pkg;
 
-// Ethereum configuration - use your testnet settings
+// Ethereum configuration - Sepolia testnet with fallback
 const ETH_RPC_URL = process.env.ETH_RPC_URL || "https://sepolia.infura.io/v3/04944e1b094c4f93ad909a10bcff6803";
+const ETH_RPC_FALLBACK = "https://rpc.sepolia.org";
 const ETH_CHAIN_ID = process.env.ETH_CHAIN_ID || "11155111";
-const HTLC_CONTRACT_ADDRESS = process.env.HTLC_CONTRACT_ADDRESS || "0x6c91739cbC4c9e4F1907Cc11AC8431ca1a55d0C6";
-const RESOLVER_CONTRACT_ADDRESS = process.env.RESOLVER_CONTRACT_ADDRESS || "0xD5cA355e5Cf8Ba93d0A363C956204d0734e73F50";
+const HTLC_CONTRACT_ADDRESS = process.env.HTLC_CONTRACT_ADDRESS || "0x55A636413A2956687B02cAd9e6ea53B83d2D64F0";
+const RESOLVER_CONTRACT_ADDRESS = process.env.RESOLVER_CONTRACT_ADDRESS || "0xA7c9B608d78b4c97A59c747F2C6d24006938403b";
+const FACTORY_CONTRACT_ADDRESS = process.env.FACTORY_CONTRACT_ADDRESS || "0xCD0604dA567d7A691d73A694338deB8B2354D715";
 
 // Production settings
 const ENABLE_REAL_TRANSACTIONS = process.env.ENABLE_REAL_TRANSACTIONS === "true";
@@ -16,11 +18,48 @@ const ENABLE_SIGNATURE_VERIFICATION = process.env.ENABLE_SIGNATURE_VERIFICATION 
 const STELLAR_HORIZON_URL = process.env.STELLAR_HORIZON_URL || "https://horizon-testnet.stellar.org";
 const STELLAR_NETWORK_PASSPHRASE = process.env.STELLAR_NETWORK_PASSPHRASE || Networks.TESTNET;
 
-// Ethereum provider
+// Retry utility for network operations
+async function retryOperation(operation, maxRetries = 3, delay = 2000) {
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      return await operation();
+    } catch (error) {
+      if (attempt === maxRetries) {
+        throw error;
+      }
+
+      // If it's a network timeout, retry
+      if (error.code === 'ETIMEDOUT' || error.message.includes('timeout')) {
+        console.log(`⚠️ Network timeout, retrying in ${delay}ms (attempt ${attempt}/${maxRetries})`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+        delay *= 2; // Exponential backoff
+        continue;
+      }
+
+      // For other errors, don't retry
+      throw error;
+    }
+  }
+}
+
+// Ethereum provider with fallback
 let ethProvider = null;
-export function getEthereumProvider() {
+let currentRpcUrl = ETH_RPC_URL;
+
+export async function getEthereumProvider() {
   if (!ethProvider) {
-    ethProvider = new ethers.JsonRpcProvider(ETH_RPC_URL);
+    try {
+      ethProvider = new ethers.JsonRpcProvider(currentRpcUrl);
+      // Test the connection
+      await ethProvider.getNetwork();
+      console.log(`✅ Connected to Ethereum RPC: ${currentRpcUrl}`);
+    } catch (error) {
+      console.log(`❌ Failed to connect to ${currentRpcUrl}, trying fallback...`);
+      currentRpcUrl = ETH_RPC_FALLBACK;
+      ethProvider = new ethers.JsonRpcProvider(currentRpcUrl);
+      await ethProvider.getNetwork();
+      console.log(`✅ Connected to Ethereum RPC fallback: ${currentRpcUrl}`);
+    }
   }
   return ethProvider;
 }
@@ -44,6 +83,21 @@ const HTLC_ABI = [
   "event Refunded(bytes32 indexed swapId)"
 ];
 
+// Factory Contract ABI
+const FACTORY_ABI = [
+  "function createSwap(address recipient, address token, uint256 totalAmount, bytes32 hash, uint256 timelock) external payable returns (bytes32)",
+  "function claimContract(bytes32 swapId, uint256 contractIndex, bytes32 preimage) external",
+  "function getSwapInfo(bytes32 swapId) external view returns (address, address, address, uint256, uint256, bytes32, uint256, bool, uint256)",
+  "function getSwapContracts(bytes32 swapId) external view returns (address[10])",
+  "function getContractResolver(bytes32 swapId, uint256 contractIndex) external view returns (address)",
+  "function calculateClaimableContracts(uint256 fillPercentage) external pure returns (uint256)",
+  "function getRemainingContracts(bytes32 swapId) external view returns (uint256[])",
+  "event SwapCreated(bytes32 indexed swapId, address indexed initiator, uint256 totalAmount, uint256 amountPerContract)",
+  "event ContractCreated(bytes32 indexed swapId, uint256 contractIndex, address contractAddress, uint256 amount)",
+  "event ContractClaimed(bytes32 indexed swapId, uint256 contractIndex, address indexed resolver, uint256 amount)",
+  "event SwapCompleted(bytes32 indexed swapId, uint256 totalClaimed)"
+];
+
 // Resolver Contract ABI
 const RESOLVER_ABI = [
   "function openSwap(address escrow, uint16 toChain, uint256 amount, bytes32 hash, uint256 timelock) external returns (bytes32)",
@@ -54,15 +108,71 @@ const RESOLVER_ABI = [
 ];
 
 // Get HTLC contract instance
-export function getHTLCContract(signer = null) {
-  const provider = getEthereumProvider();
+export async function getHTLCContract(signer = null) {
+  const provider = await getEthereumProvider();
   const contract = new ethers.Contract(HTLC_CONTRACT_ADDRESS, HTLC_ABI, signer || provider);
   return contract;
 }
 
+// Get Factory contract instance
+export async function getFactoryContract(signer = null) {
+  const provider = await getEthereumProvider();
+  // verify there's bytecode at that address
+  const code = await provider.getCode(FACTORY_CONTRACT_ADDRESS);
+  if (code === "0x") {
+    throw new Error(`No contract deployed at ${FACTORY_CONTRACT_ADDRESS}`);
+  }
+
+  console.log(`🔍 Contract bytecode length: ${code.length}`);
+
+  const contract = new ethers.Contract(
+    FACTORY_CONTRACT_ADDRESS,
+    FACTORY_ABI,
+    signer || provider
+  );
+
+  // debug: list available functions with error handling for ethers v6
+  try {
+    // In ethers v6, we need to use contract.interface.fragments instead of functions
+    const fragments = contract.interface.fragments;
+    const functionNames = fragments
+      .filter(fragment => fragment.type === 'function')
+      .map(fragment => fragment.name);
+
+    console.log(
+      `🔍 Factory at ${FACTORY_CONTRACT_ADDRESS} exposes:`,
+      functionNames.length > 0 ? functionNames : "No functions found"
+    );
+  } catch (error) {
+    console.log(`⚠️ Could not get contract functions:`, error.message);
+    console.log(`🔍 Contract interface:`, contract.interface);
+  }
+
+  return contract;
+}
+
 // Get Resolver contract instance
-export function getResolverContract(signer = null) {
-  const provider = getEthereumProvider();
+export async function getResolverContract(signer = null) {
+  const provider = await getEthereumProvider();
+  const contract = new ethers.Contract(RESOLVER_CONTRACT_ADDRESS, RESOLVER_ABI, signer || provider);
+  return contract;
+}
+
+// Synchronous versions for backward compatibility
+export function getHTLCContractSync(signer = null) {
+  const provider = new ethers.JsonRpcProvider(ETH_RPC_URL);
+  const contract = new ethers.Contract(HTLC_CONTRACT_ADDRESS, HTLC_ABI, signer || provider);
+  return contract;
+}
+
+export function getFactoryContractSync(signer = null) {
+  const provider = new ethers.JsonRpcProvider(ETH_RPC_URL);
+  const contract = new ethers.Contract(FACTORY_CONTRACT_ADDRESS, FACTORY_ABI, signer || provider);
+  return contract;
+}
+
+export function getResolverContractSync(signer = null) {
+  const provider = new ethers.JsonRpcProvider(ETH_RPC_URL);
   const contract = new ethers.Contract(RESOLVER_CONTRACT_ADDRESS, RESOLVER_ABI, signer || provider);
   return contract;
 }
@@ -71,8 +181,8 @@ export function getResolverContract(signer = null) {
 export function computeSwapId(initiator, recipient, token, amount, hash, timelock) {
   return ethers.keccak256(
     ethers.AbiCoder.defaultAbiCoder().encode(
-      ["address", "address", "address", "uint256", "bytes32", "uint256"],
-      [initiator, recipient, token, amount, hash, timelock]
+      ["address", "address", "address", "uint256", "bytes32", "uint256", "uint256"],
+      [initiator, recipient, token, amount, hash, timelock, Math.floor(Date.now() / 1000)]
     )
   );
 }
@@ -139,6 +249,170 @@ export async function verifyEthSignature(message, signature, expectedAddress) {
   } catch (error) {
     console.error("Signature verification failed:", error);
     return false;
+  }
+}
+
+// Create swap with 10 contracts using Factory
+export async function createSwapWithFactory(recipient, token, totalAmount, hash, timelock, signer) {
+  if (!ENABLE_REAL_TRANSACTIONS) {
+    console.log("⚠️ Real transactions disabled - simulating swap creation");
+    return "simulated_swap_id";
+  }
+
+  return retryOperation(async () => {
+    // Ensure signer is connected to a provider
+    let connectedSigner = signer;
+    if (signer && !signer.provider) {
+      const provider = await getEthereumProvider();
+      connectedSigner = signer.connect(provider);
+    }
+
+    const contract = await getFactoryContract(connectedSigner);
+
+    // Convert totalAmount to BigInt and ensure it's divisible by 10
+    const totalAmountBigInt = BigInt(totalAmount);
+    if (totalAmountBigInt % 10n !== 0n) {
+      throw new Error("Amount must be divisible by 10");
+    }
+
+    console.log(`🔧 Creating swap with factory:`, {
+      recipient,
+      token,
+      totalAmount: totalAmountBigInt.toString(),
+      hash,
+      timelock
+    });
+
+    const tx = await contract.createSwap(recipient, token, totalAmountBigInt, hash, timelock, {
+      value: token === ethers.ZeroAddress ? totalAmountBigInt : 0
+    });
+
+    console.log(`📝 Transaction submitted: ${tx.hash}`);
+    const receipt = await tx.wait();
+    console.log(`✅ Transaction confirmed in block ${receipt.blockNumber}`);
+
+    // Parse SwapCreated event to get swap ID
+    console.log(`🔍 Looking for SwapCreated event in ${receipt.logs.length} logs`);
+    const event = receipt.logs
+      .map(log => {
+        try {
+          const parsed = contract.interface.parseLog(log);
+          if (parsed && parsed.name) {
+            console.log(`🔍 Log: ${parsed.name}`, parsed.args);
+            return parsed;
+          } else {
+            console.log(`🔍 Could not parse log: Invalid parsed result`);
+            return null;
+          }
+        } catch (e) {
+          console.log(`🔍 Could not parse log:`, e.message);
+          return null;
+        }
+      })
+      .find(e => e && e.name === "SwapCreated");
+
+    if (event) {
+      console.log(`✅ Found SwapCreated event with swapId: ${event.args.swapId}`);
+      return event.args.swapId;
+    } else {
+      console.log(`❌ No SwapCreated event found in transaction`);
+      // Try to compute the swap ID manually as fallback
+      const swapId = computeSwapId(connectedSigner.address, recipient, token, totalAmountBigInt, hash, timelock);
+      console.log(`🔧 Computed swap ID as fallback: ${swapId}`);
+      return swapId;
+    }
+  });
+}
+
+// Claim specific contract from Factory
+export async function claimContractFromFactory(swapId, contractIndex, preimage, signer) {
+  if (!ENABLE_REAL_TRANSACTIONS) {
+    console.log("⚠️ Real transactions disabled - simulating contract claim");
+    return { hash: "simulated_claim_tx_hash", status: 1 };
+  }
+
+  try {
+    let contract = await getFactoryContract(signer);
+    // small delay so on-chain state catches up
+    await new Promise((r) => setTimeout(r, 2000));
+
+    // Validate that getSwapInfo exists before we proceed (ethers v6 compatible)
+    const hasGetSwapInfo = contract.interface.fragments.some(
+      fragment => fragment.type === 'function' && fragment.name === 'getSwapInfo'
+    );
+
+    if (!hasGetSwapInfo) {
+      const functionNames = contract.interface.fragments
+        .filter(fragment => fragment.type === 'function')
+        .map(fragment => fragment.name);
+
+      console.error(
+        `❌ Factory contract is missing getSwapInfo; methods:`,
+        functionNames
+      );
+      throw new Error("Factory ABI mismatch: getSwapInfo not found");
+    }
+
+    // fetch info to confirm we're in the right state
+    const info = await contract.getSwapInfo(swapId);
+    console.log(`🔍 SwapInfo(${swapId}):`, info);
+
+    const tx = await contract.claimContract(swapId, contractIndex, preimage);
+    return await tx.wait();
+  } catch (error) {
+    console.error(
+      `❌ Failed to claim contract ${contractIndex} for swap ${swapId}:`,
+      error.message
+    );
+    throw error;
+  }
+}
+
+// Get swap info from Factory
+export async function getSwapInfoFromFactory(swapId) {
+  try {
+    const contract = await getFactoryContract();
+    return await contract.getSwapInfo(swapId);
+  } catch (error) {
+    console.log("Falling back to sync factory contract");
+    const contract = getFactoryContractSync();
+    return await contract.getSwapInfo(swapId);
+  }
+}
+
+// Get swap contracts from Factory
+export async function getSwapContractsFromFactory(swapId) {
+  try {
+    const contract = await getFactoryContract();
+    return await contract.getSwapContracts(swapId);
+  } catch (error) {
+    console.log("Falling back to sync factory contract");
+    const contract = getFactoryContractSync();
+    return await contract.getSwapContracts(swapId);
+  }
+}
+
+// Calculate claimable contracts based on fill percentage
+export async function calculateClaimableContracts(fillPercentage) {
+  try {
+    const contract = await getFactoryContract();
+    return await contract.calculateClaimableContracts(fillPercentage);
+  } catch (error) {
+    console.log("Falling back to sync factory contract");
+    const contract = getFactoryContractSync();
+    return await contract.calculateClaimableContracts(fillPercentage);
+  }
+}
+
+// Get remaining contracts for a swap
+export async function getRemainingContracts(swapId) {
+  try {
+    const contract = await getFactoryContract();
+    return await contract.getRemainingContracts(swapId);
+  } catch (error) {
+    console.log("Falling back to sync factory contract");
+    const contract = getFactoryContractSync();
+    return await contract.getRemainingContracts(swapId);
   }
 }
 

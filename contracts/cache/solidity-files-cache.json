@@ -2,17 +2,17 @@
   "_format": "hh-sol-cache-2",
   "files": {
     "/Users/krishnanshugupta/ETHGlobal/contracts/src/HTLC.sol": {
-      "lastModificationDate": 1754157101362,
-      "contentHash": "dba56d941b7e4eb16ad1a1bf3a1ba171",
+      "lastModificationDate": 1754230456270,
+      "contentHash": "4f2dd1136336a519c2c3495ca21fb37c",
       "sourceName": "src/HTLC.sol",
       "solcConfig": {
         "version": "0.8.20",
         "settings": {
-          "evmVersion": "paris",
           "optimizer": {
-            "enabled": false,
+            "enabled": true,
             "runs": 200
           },
+          "evmVersion": "paris",
           "outputSelection": {
             "*": {
               "*": [
@@ -46,11 +46,11 @@
       "solcConfig": {
         "version": "0.8.20",
         "settings": {
-          "evmVersion": "paris",
           "optimizer": {
-            "enabled": false,
+            "enabled": true,
             "runs": 200
           },
+          "evmVersion": "paris",
           "outputSelection": {
             "*": {
               "*": [
@@ -76,17 +76,17 @@
       ]
     },
     "/Users/krishnanshugupta/ETHGlobal/contracts/src/TestEscrowFactory.sol": {
-      "lastModificationDate": 1754157101577,
-      "contentHash": "19f0672ba7e016aada4ea5833c385d55",
+      "lastModificationDate": 1754230453804,
+      "contentHash": "c56282f4c2b4301cb5bc8e3aefab0233",
       "sourceName": "src/TestEscrowFactory.sol",
       "solcConfig": {
         "version": "0.8.20",
         "settings": {
-          "evmVersion": "paris",
           "optimizer": {
-            "enabled": false,
+            "enabled": true,
             "runs": 200
           },
+          "evmVersion": "paris",
           "outputSelection": {
             "*": {
               "*": [
@@ -104,7 +104,8 @@
         }
       },
       "imports": [
-        "./HTLC.sol"
+        "./HTLC.sol",
+        "./IERC20.sol"
       ],
       "versionPragmas": [
         "^0.8.20"
@@ -120,11 +121,11 @@
       "solcConfig": {
         "version": "0.8.20",
         "settings": {
-          "evmVersion": "paris",
           "optimizer": {
-            "enabled": false,
+            "enabled": true,
             "runs": 200
           },
+          "evmVersion": "paris",
           "outputSelection": {
             "*": {
               "*": [

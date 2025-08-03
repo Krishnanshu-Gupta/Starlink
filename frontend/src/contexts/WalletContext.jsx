@@ -50,25 +50,59 @@ export function WalletProvider({ children }) {
           "MetaMask is not installed. Please install MetaMask to continue."
         );
       }
+
       const eth = window.ethereum;
       let metamaskProvider = null;
+
+      // Check if providers array exists (newer MetaMask versions)
       if (Array.isArray(eth.providers)) {
         metamaskProvider = eth.providers.find(p => p.isMetaMask) || null;
       }
-      metamaskProvider =
-        metamaskProvider || (eth.isMetaMask ? eth : null);
+
+      // Fallback to direct ethereum object
+      metamaskProvider = metamaskProvider || (eth.isMetaMask ? eth : null);
+
       if (!metamaskProvider) {
         throw new Error(
           "MetaMask provider not found. Please enable MetaMask."
         );
       }
+
+      // Check if provider is connected
+      try {
+        await metamaskProvider.request({ method: 'eth_accounts' });
+      } catch (providerError) {
+        console.warn("Provider connection check failed:", providerError);
+        // Continue anyway, as the provider might still work
+      }
+
       const provider = new ethers.BrowserProvider(metamaskProvider);
-      await provider.send("eth_requestAccounts", []);
+
+      // Request accounts with better error handling
+      try {
+        await provider.send("eth_requestAccounts", []);
+      } catch (requestError) {
+        if (requestError.code === 4001) {
+          throw new Error("User rejected the connection request. Please approve MetaMask connection.");
+        }
+        throw requestError;
+      }
+
       const signer = await provider.getSigner();
       const address = await signer.getAddress();
       const network = await provider.getNetwork();
-      const balanceBig = await provider.getBalance(address);
+
+      // Get balance with retry logic
+      let balanceBig;
+      try {
+        balanceBig = await provider.getBalance(address);
+      } catch (balanceError) {
+        console.warn("Failed to get balance, using 0:", balanceError);
+        balanceBig = ethers.parseEther("0");
+      }
+
       const balance = ethers.formatEther(balanceBig);
+
       setEthWallet({
         address,
         signer,
@@ -77,22 +111,48 @@ export function WalletProvider({ children }) {
         isConnected: true,
         chainId: network.chainId
       });
-      metamaskProvider.on("accountsChanged", handleEthAccountChange);
-      metamaskProvider.on("chainChanged", handleEthChainChange);
+
+      // Add event listeners with error handling
+      try {
+        metamaskProvider.on("accountsChanged", handleEthAccountChange);
+        metamaskProvider.on("chainChanged", handleEthChainChange);
+      } catch (listenerError) {
+        console.warn("Failed to add event listeners:", listenerError);
+      }
+
     } catch (err) {
       console.error("Error connecting to Ethereum wallet:", err);
-      setError(err.message || String(err));
+
+      // Provide more specific error messages
+      let errorMessage = err.message || String(err);
+
+      if (errorMessage.includes("Block tracker destroyed")) {
+        errorMessage = "MetaMask connection was interrupted. Please refresh the page and try again.";
+      } else if (errorMessage.includes("User rejected")) {
+        errorMessage = "Connection was rejected. Please approve the MetaMask connection request.";
+      } else if (errorMessage.includes("already pending")) {
+        errorMessage = "A connection request is already pending. Please check MetaMask.";
+      }
+
+      setError(errorMessage);
     } finally {
       setIsLoading(false);
     }
   };
 
   const disconnectEthWallet = () => {
-    if (ethWallet.provider) {
-      const p = ethWallet.provider.provider;
-      p.removeListener("accountsChanged", handleEthAccountChange);
-      p.removeListener("chainChanged", handleEthChainChange);
+    try {
+      if (ethWallet.provider) {
+        const p = ethWallet.provider.provider;
+        if (p && typeof p.removeListener === 'function') {
+          p.removeListener("accountsChanged", handleEthAccountChange);
+          p.removeListener("chainChanged", handleEthChainChange);
+        }
+      }
+    } catch (error) {
+      console.warn("Error during wallet disconnect:", error);
     }
+
     setEthWallet({
       address: "",
       signer: null,
@@ -104,15 +164,26 @@ export function WalletProvider({ children }) {
   };
 
   const handleEthAccountChange = async accounts => {
-    if (!accounts.length) {
-      disconnectEthWallet();
-    } else {
-      await connectEthWallet();
+    try {
+      if (!accounts.length) {
+        disconnectEthWallet();
+      } else {
+        await connectEthWallet();
+      }
+    } catch (error) {
+      console.error("Error handling account change:", error);
+      // Don't set error here as it might be a temporary issue
     }
   };
 
   const handleEthChainChange = () => {
-    window.location.reload();
+    try {
+      window.location.reload();
+    } catch (error) {
+      console.error("Error handling chain change:", error);
+      // Fallback: just disconnect and let user reconnect
+      disconnectEthWallet();
+    }
   };
 
   const signEthTransaction = async tx => {
