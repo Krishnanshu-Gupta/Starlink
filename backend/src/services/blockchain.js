@@ -2,8 +2,9 @@ import { ethers } from "ethers";
 import pkg from "@stellar/stellar-sdk";
 const { Horizon, Networks, TransactionBuilder, Operation, Keypair, TimeBounds, Signer } = pkg;
 
-// Ethereum configuration
+// Ethereum configuration - use your testnet settings
 const ETH_RPC_URL = process.env.ETH_RPC_URL || "https://sepolia.infura.io/v3/04944e1b094c4f93ad909a10bcff6803";
+const ETH_CHAIN_ID = process.env.ETH_CHAIN_ID || "11155111";
 const HTLC_CONTRACT_ADDRESS = process.env.HTLC_CONTRACT_ADDRESS || "0x6c91739cbC4c9e4F1907Cc11AC8431ca1a55d0C6";
 const RESOLVER_CONTRACT_ADDRESS = process.env.RESOLVER_CONTRACT_ADDRESS || "0xD5cA355e5Cf8Ba93d0A363C956204d0734e73F50";
 
@@ -11,9 +12,9 @@ const RESOLVER_CONTRACT_ADDRESS = process.env.RESOLVER_CONTRACT_ADDRESS || "0xD5
 const ENABLE_REAL_TRANSACTIONS = process.env.ENABLE_REAL_TRANSACTIONS === "true";
 const ENABLE_SIGNATURE_VERIFICATION = process.env.ENABLE_SIGNATURE_VERIFICATION === "true";
 
-// Stellar configuration
-const STELLAR_HORIZON_URL = "https://horizon-testnet.stellar.org";
-const STELLAR_NETWORK_PASSPHRASE = Networks.TESTNET;
+// Stellar configuration - use your testnet settings
+const STELLAR_HORIZON_URL = process.env.STELLAR_HORIZON_URL || "https://horizon-testnet.stellar.org";
+const STELLAR_NETWORK_PASSPHRASE = process.env.STELLAR_NETWORK_PASSPHRASE || Networks.TESTNET;
 
 // Ethereum provider
 let ethProvider = null;
@@ -119,8 +120,22 @@ export async function verifyEthSignature(message, signature, expectedAddress) {
   }
 
   try {
+    console.log("🔐 Verifying signature:", {
+      message,
+      signature: signature.slice(0, 10) + "...",
+      expectedAddress
+    });
+
     const recoveredAddress = ethers.verifyMessage(message, signature);
-    return recoveredAddress.toLowerCase() === expectedAddress.toLowerCase();
+    const isValid = recoveredAddress.toLowerCase() === expectedAddress.toLowerCase();
+
+    console.log("🔐 Signature verification result:", {
+      recoveredAddress,
+      expectedAddress,
+      isValid
+    });
+
+    return isValid;
   } catch (error) {
     console.error("Signature verification failed:", error);
     return false;
@@ -244,7 +259,7 @@ export function isValidStellarAddress(address) {
 // Generate random secret and hash
 export function generateSecretAndHash() {
   const secret = ethers.randomBytes(32);
-  const secretHex = secret.toString("hex");
+  const secretHex = ethers.hexlify(secret);
   const hash = ethers.keccak256(secret);
   return { secret, secretHex, hash };
 }

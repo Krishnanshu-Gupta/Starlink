@@ -1,15 +1,44 @@
 import React from "react";
 import { Link } from "react-router-dom";
+import { useQuery } from "@tanstack/react-query";
 import { useWallet } from "../contexts/WalletContext.jsx";
-import { useSwap } from "../contexts/SwapContext.jsx";
 
 export default function Dashboard() {
   const { ethWallet, stellarWallet, refreshBalances } = useWallet();
-  const { getSwapHistory, getAllSwaps } = useSwap();
 
-  // Get swap history for connected wallets
-  const ethHistory = getSwapHistory(ethWallet.address);
-  const stellarHistory = getSwapHistory(stellarWallet.address);
+  // Get swap history for Ethereum wallet
+  const ethHistory = useQuery({
+    queryKey: ['swap-history', ethWallet.address],
+    queryFn: async () => {
+      if (!ethWallet.address) return { swaps: [], total: 0, completed: 0, pending: 0 };
+      const response = await fetch(`http://localhost:3001/api/swap/history/${ethWallet.address}`);
+      if (!response.ok) throw new Error('Failed to fetch ETH swap history');
+      return response.json();
+    },
+    enabled: !!ethWallet.address,
+    refetchInterval: 10000 // Poll every 10 seconds
+  });
+
+  // Get swap history for Stellar wallet
+  const stellarHistory = useQuery({
+    queryKey: ['swap-history', stellarWallet.address],
+    queryFn: async () => {
+      if (!stellarWallet.address) return { swaps: [], total: 0, completed: 0, pending: 0 };
+      const response = await fetch(`http://localhost:3001/api/swap/history/${stellarWallet.address}`);
+      if (!response.ok) throw new Error('Failed to fetch Stellar swap history');
+      return response.json();
+    },
+    enabled: !!stellarWallet.address,
+    refetchInterval: 10000 // Poll every 10 seconds
+  });
+
+  // Combine swap data from both wallets
+  const combinedSwaps = [
+    ...(ethHistory.data?.swaps || []),
+    ...(stellarHistory.data?.swaps || [])
+  ].filter((swap, index, self) =>
+    index === self.findIndex(s => s.id === swap.id)
+  );
 
   const formatAddress = (address) => {
     if (!address) return "Not Connected";
@@ -129,7 +158,7 @@ export default function Dashboard() {
         <div className="bg-gray-800/50 backdrop-blur-sm border border-gray-700 rounded-lg p-4">
           <div className="text-center">
             <p className="text-2xl font-bold text-white">
-              {ethHistory.data?.total || 0}
+              {combinedSwaps.length}
             </p>
             <p className="text-sm text-gray-400">Total Swaps</p>
           </div>
@@ -138,7 +167,7 @@ export default function Dashboard() {
         <div className="bg-gray-800/50 backdrop-blur-sm border border-gray-700 rounded-lg p-4">
           <div className="text-center">
             <p className="text-2xl font-bold text-green-400">
-              {ethHistory.data?.completed || 0}
+              {combinedSwaps.filter(s => s.status === "completed").length}
             </p>
             <p className="text-sm text-gray-400">Completed</p>
           </div>
@@ -147,7 +176,7 @@ export default function Dashboard() {
         <div className="bg-gray-800/50 backdrop-blur-sm border border-gray-700 rounded-lg p-4">
           <div className="text-center">
             <p className="text-2xl font-bold text-yellow-400">
-              {ethHistory.data?.pending || 0}
+              {combinedSwaps.filter(s => ["pending", "locked_eth", "locked_stellar"].includes(s.status)).length}
             </p>
             <p className="text-sm text-gray-400">Pending</p>
           </div>
@@ -177,14 +206,14 @@ export default function Dashboard() {
           </Link>
         </div>
 
-        {ethHistory.isLoading ? (
+        {ethHistory.isLoading || stellarHistory.isLoading ? (
           <div className="flex items-center justify-center py-8">
             <div className="w-6 h-6 border-2 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
             <span className="ml-2 text-gray-300">Loading swaps...</span>
           </div>
-        ) : ethHistory.data?.swaps?.length > 0 ? (
+        ) : combinedSwaps.length > 0 ? (
           <div className="space-y-3">
-            {ethHistory.data.swaps.slice(0, 5).map((swap, index) => (
+            {combinedSwaps.slice(0, 5).map((swap, index) => (
               <div key={index} className="flex items-center justify-between p-3 bg-gray-700/30 rounded-lg">
                 <div className="flex items-center space-x-3">
                   <span className={`text-lg ${getStatusColor(swap.status)}`}>
@@ -192,10 +221,10 @@ export default function Dashboard() {
                   </span>
                   <div>
                     <p className="text-white font-medium">
-                      {formatAmount(swap.amount)} ETH ↔ {formatAmount(swap.amount, 7)} XLM
+                      {formatAmount(swap.eth_amount)} ETH ↔ {formatAmount(swap.xlm_amount, 7)} XLM
                     </p>
                     <p className="text-sm text-gray-400">
-                      {new Date(swap.created_at).toLocaleDateString()}
+                      {new Date(swap.created_at * 1000).toLocaleDateString()}
                     </p>
                   </div>
                 </div>

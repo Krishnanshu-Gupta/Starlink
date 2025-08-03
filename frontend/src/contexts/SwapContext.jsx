@@ -1,6 +1,6 @@
-import React, { createContext, useContext, useState, useCallback, useEffect } from "react";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import React, { createContext, useContext, useState, useCallback } from "react";
 import { useWallet } from "./WalletContext.jsx";
+import { useMutation } from "@tanstack/react-query";
 
 const SwapContext = createContext();
 
@@ -13,149 +13,176 @@ export function useSwap() {
 }
 
 export function SwapProvider({ children }) {
+  const { ethWallet, stellarWallet, signSwapMessage, lockEthInHTLC } = useWallet();
+
   const [currentSwap, setCurrentSwap] = useState(null);
-  const [swapStep, setSwapStep] = useState("init");
-  const { ethWallet, stellarWallet } = useWallet();
-  const queryClient = useQueryClient();
-
-  // API base URL
-  const API_BASE = "http://localhost:3001/api";
-
-  // Sync swapStep with backend status when currentSwap changes
-  useEffect(() => {
-    if (currentSwap?.id) {
-      const syncSwapStatus = async () => {
-        try {
-          const response = await fetch(`${API_BASE}/swap/status/${currentSwap.id}`);
-          if (response.ok) {
-            const data = await response.json();
-            // Map backend status to frontend step
-            const statusToStep = {
-              "pending": "initiated",
-              "locked_eth": "locked_eth",
-              "locked_stellar": "locked_stellar",
-              "claimed_xlm": "claimed_xlm",
-              "claimed_eth": "claimed_eth",
-              "completed": "completed"
-            };
-            setSwapStep(statusToStep[data.status] || "initiated");
-          }
-        } catch (error) {
-          console.error("Failed to sync swap status:", error);
-        }
-      };
-
-      // Initial sync
-      syncSwapStatus();
-
-      // Poll every 5 seconds for status updates
-      const interval = setInterval(syncSwapStatus, 5000);
-
-      return () => clearInterval(interval);
-    }
-  }, [currentSwap?.id]);
+  const [swapStep, setSwapStep] = useState("idle");
 
   // Initiate ETH to XLM swap
   const initiateEthToXlmSwap = useMutation({
-    mutationFn: async (swapData) => {
-      const response = await fetch(`${API_BASE}/swap/initiate-eth`, {
+    mutationFn: async ({ ethAmount, xlmAmount, timelockMinutes }) => {
+      if (!ethWallet.isConnected) {
+        throw new Error("Ethereum wallet not connected");
+      }
+
+      const response = await fetch("http://localhost:3001/api/swap/initiate-eth", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          ethAmount,
+          xlmAmount,
+          timelockMinutes,
           initiatorAddress: ethWallet.address,
-          recipientAddress: stellarWallet.address,
-          ethAmount: swapData.ethAmount,
-          xlmAmount: swapData.xlmAmount,
-          timelockMinutes: swapData.timelockMinutes || 30,
-        }),
+          recipientAddress: stellarWallet.address || "G" + "0".repeat(55) // Placeholder if Stellar not connected
+        })
       });
 
       if (!response.ok) {
         const error = await response.json();
-        throw new Error(error.error || "Failed to initiate ETH to XLM swap");
+        throw new Error(error.error || "Failed to initiate swap");
       }
 
-      return response.json();
+      const data = await response.json();
+      return data;
     },
     onSuccess: (data) => {
       setCurrentSwap({
-        ...data,
-        id: data.swapId, // Map swapId to id for consistency
-        swapId: data.swapId
+        swapId: data.swapId,
+        direction: "ETH_TO_XLM",
+        status: "initiated",
+        ethAmount: data.ethAmount,
+        xlmAmount: data.xlmAmount,
+        timelock: data.timelock,
+        secret: data.secret,
+        hash: data.hash
       });
       setSwapStep("initiated");
-      queryClient.invalidateQueries(["swaps"]);
-    },
-    onError: (error) => {
-      console.error("Error initiating ETH to XLM swap:", error);
-    },
+    }
   });
 
   // Initiate XLM to ETH swap
   const initiateXlmToEthSwap = useMutation({
-    mutationFn: async (swapData) => {
-      const response = await fetch(`${API_BASE}/swap/initiate-xlm`, {
+    mutationFn: async ({ xlmAmount, ethAmount, timelockMinutes }) => {
+      if (!stellarWallet.isConnected) {
+        throw new Error("Stellar wallet not connected");
+      }
+
+      const response = await fetch("http://localhost:3001/api/swap/initiate-xlm", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          xlmAmount,
+          ethAmount,
+          timelockMinutes,
           initiatorAddress: stellarWallet.address,
-          recipientAddress: ethWallet.address,
-          xlmAmount: swapData.xlmAmount,
-          ethAmount: swapData.ethAmount,
-          timelockMinutes: swapData.timelockMinutes || 30,
-        }),
+          recipientAddress: ethWallet.address || "0x" + "0".repeat(40) // Placeholder if ETH not connected
+        })
       });
 
       if (!response.ok) {
         const error = await response.json();
-        throw new Error(error.error || "Failed to initiate XLM to ETH swap");
+        throw new Error(error.error || "Failed to initiate swap");
       }
 
-      return response.json();
+      const data = await response.json();
+      return data;
     },
     onSuccess: (data) => {
       setCurrentSwap({
-        ...data,
-        id: data.swapId, // Map swapId to id for consistency
-        swapId: data.swapId
+        swapId: data.swapId,
+        direction: "XLM_TO_ETH",
+        status: "initiated",
+        ethAmount: data.ethAmount,
+        xlmAmount: data.xlmAmount,
+        timelock: data.timelock,
+        secret: data.secret,
+        hash: data.hash
       });
       setSwapStep("initiated");
-      queryClient.invalidateQueries(["swaps"]);
-    },
-    onError: (error) => {
-      console.error("Error initiating XLM to ETH swap:", error);
-    },
+    }
   });
 
-  // Lock ETH
+  // Lock ETH using real MetaMask integration
   const lockEthMutation = useMutation({
-    mutationFn: async ({ swapId }) => {
-      // Use the real lockEth function from WalletContext
-      const { lockEth } = useWallet();
-      return await lockEth(swapId);
+    mutationFn: async ({ swapId, amount }) => {
+      if (!ethWallet.isConnected) {
+        throw new Error("Ethereum wallet not connected");
+      }
+
+      // Get swap details from backend
+      const swapResponse = await fetch(`http://localhost:3001/api/swap/status/${swapId}`);
+      const swapData = await swapResponse.json();
+
+      if (!swapData.swap) {
+        throw new Error("Swap not found");
+      }
+
+      // Sign message for authorization
+      const { signature, message } = await signSwapMessage(swapId, amount, "ETH");
+
+      // Lock ETH directly through MetaMask
+      const lockResult = await lockEthInHTLC(
+        swapId,
+        amount,
+        swapData.swap.initiator_address,
+        swapData.swap.hash,
+        swapData.swap.timelock
+      );
+
+      // Update backend with signature verification
+      const response = await fetch("http://localhost:3001/api/swap/lock-eth", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          swapId,
+          signature,
+          userAddress: ethWallet.address
+        })
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.error || "Failed to update swap status");
+      }
+
+      // Update backend with transaction hash
+      const txResponse = await fetch("http://localhost:3001/api/swap/update-eth-tx", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          swapId,
+          txHash: lockResult.hash
+        })
+      });
+
+      if (!txResponse.ok) {
+        const error = await txResponse.json();
+        throw new Error(error.error || "Failed to update transaction hash");
+      }
+
+      return await response.json();
     },
     onSuccess: (data) => {
+      setCurrentSwap(prev => ({ ...prev, status: "locked_eth" }));
       setSwapStep("locked_eth");
-      queryClient.invalidateQueries(["swap", currentSwap?.swapId]);
-    },
-    onError: (error) => {
-      console.error("Error locking ETH:", error);
-    },
+    }
   });
 
   // Lock XLM
   const lockXlmMutation = useMutation({
     mutationFn: async ({ swapId, stellarAddress, xlmAmount }) => {
-      const response = await fetch(`${API_BASE}/swap/lock-stellar`, {
+      if (!stellarWallet.isConnected) {
+        throw new Error("Stellar wallet not connected");
+      }
+
+      const response = await fetch("http://localhost:3001/api/swap/lock-xlm", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ swapId, stellarAddress, xlmAmount }),
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          swapId,
+          resolverId: "resolver1", // For now, use first resolver
+          amount: xlmAmount
+        })
       });
 
       if (!response.ok) {
@@ -163,54 +190,24 @@ export function SwapProvider({ children }) {
         throw new Error(error.error || "Failed to lock XLM");
       }
 
-      return response.json();
+      return await response.json();
     },
     onSuccess: (data) => {
+      setCurrentSwap(prev => ({ ...prev, status: "locked_stellar" }));
       setSwapStep("locked_stellar");
-      queryClient.invalidateQueries(["swap", currentSwap?.swapId]);
-    },
-    onError: (error) => {
-      console.error("Error locking XLM:", error);
-    },
-  });
-
-  // Claim funds
-  const claimMutation = useMutation({
-    mutationFn: async ({ swapId, secretHex, chain }) => {
-      const response = await fetch(`${API_BASE}/swap/claim`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ swapId, secretHex, chain }),
-      });
-
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.error || "Failed to claim funds");
-      }
-
-      return response.json();
-    },
-    onSuccess: (data) => {
-      setSwapStep("completed");
-      queryClient.invalidateQueries(["swap", currentSwap?.swapId]);
-      queryClient.invalidateQueries(["swaps"]);
-    },
-    onError: (error) => {
-      console.error("Error claiming funds:", error);
-    },
+    }
   });
 
   // Claim XLM
   const claimXlmMutation = useMutation({
     mutationFn: async ({ swapId, secret }) => {
-      const response = await fetch(`${API_BASE}/swap/claim-xlm`, {
+      const response = await fetch("http://localhost:3001/api/swap/claim-xlm", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ swapId, secret }),
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          swapId,
+          secret
+        })
       });
 
       if (!response.ok) {
@@ -218,26 +215,25 @@ export function SwapProvider({ children }) {
         throw new Error(error.error || "Failed to claim XLM");
       }
 
-      return response.json();
+      return await response.json();
     },
     onSuccess: (data) => {
+      setCurrentSwap(prev => ({ ...prev, status: "claimed_xlm" }));
       setSwapStep("claimed_xlm");
-      queryClient.invalidateQueries(["swap", currentSwap?.swapId]);
-    },
-    onError: (error) => {
-      console.error("Error claiming XLM:", error);
-    },
+    }
   });
 
-  // Claim ETH (called by relayer)
+  // Claim ETH
   const claimEthMutation = useMutation({
     mutationFn: async ({ swapId, secret }) => {
-      const response = await fetch(`${API_BASE}/swap/claim-eth`, {
+      const response = await fetch("http://localhost:3001/api/swap/claim-eth", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ swapId, secret }),
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          swapId,
+          secret,
+          resolverId: "resolver1"
+        })
       });
 
       if (!response.ok) {
@@ -245,130 +241,48 @@ export function SwapProvider({ children }) {
         throw new Error(error.error || "Failed to claim ETH");
       }
 
-      return response.json();
+      return await response.json();
     },
     onSuccess: (data) => {
+      setCurrentSwap(prev => ({ ...prev, status: "completed" }));
       setSwapStep("completed");
-      queryClient.invalidateQueries(["swap", currentSwap?.swapId]);
-    },
-    onError: (error) => {
-      console.error("Error claiming ETH:", error);
-    },
+    }
   });
-
-  // Get swap status
-  const getSwapStatus = useCallback((swapId) => {
-    return useQuery({
-      queryKey: ["swap", swapId],
-      queryFn: async () => {
-        const response = await fetch(`${API_BASE}/swap/status/${swapId}`);
-        if (!response.ok) {
-          throw new Error("Failed to fetch swap status");
-        }
-        return response.json();
-      },
-      enabled: !!swapId,
-      refetchInterval: 5000, // Poll every 5 seconds
-    });
-  }, []);
-
-  // Get user's swap history
-  const getSwapHistory = useCallback((address) => {
-    return useQuery({
-      queryKey: ["swaps", address],
-      queryFn: async () => {
-        const response = await fetch(`${API_BASE}/swap/history/${address}`);
-        if (!response.ok) {
-          throw new Error("Failed to fetch swap history");
-        }
-        return response.json();
-      },
-      enabled: !!address,
-    });
-  }, []);
-
-  // Get all swaps (for admin/dashboard)
-  const getAllSwaps = useQuery({
-    queryKey: ["swaps"],
-    queryFn: async () => {
-      const response = await fetch(`${API_BASE}/swap/history/all`);
-      if (!response.ok) {
-        throw new Error("Failed to fetch swaps");
-      }
-      return response.json();
-    },
-    refetchInterval: 10000, // Poll every 10 seconds
-  });
-
-  // Refund a swap
-  const refundMutation = useMutation({
-    mutationFn: async ({ swapId, chain }) => {
-      const response = await fetch(`${API_BASE}/swap/refund`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ swapId, chain }),
-      });
-
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.error || "Failed to refund swap");
-      }
-
-      return response.json();
-    },
-    onSuccess: (data) => {
-      setSwapStep("refunded");
-      queryClient.invalidateQueries(["swap", currentSwap?.swapId]);
-      queryClient.invalidateQueries(["swaps"]);
-    },
-    onError: (error) => {
-      console.error("Error refunding swap:", error);
-    },
-  });
-
-  // Calculate exchange rate (mock - in real app this would come from an oracle)
-  const calculateExchangeRate = useCallback((ethAmount, xlmAmount) => {
-    if (!ethAmount || !xlmAmount) return null;
-    return (parseFloat(xlmAmount) / parseFloat(ethAmount)).toFixed(2);
-  }, []);
 
   // Validate swap parameters
   const validateSwapParams = useCallback((direction, amount, timelockMinutes) => {
     const errors = [];
 
-    // Check wallet connections
-    if (!ethWallet.isConnected) {
-      errors.push("Ethereum wallet not connected");
-    }
-    if (!stellarWallet.isConnected) {
-      errors.push("Stellar wallet not connected");
-    }
-
-    // Check amount
     if (!amount || parseFloat(amount) <= 0) {
       errors.push("Amount must be greater than 0");
     }
 
-    // Check balances
-    if (direction === "ETH_TO_XLM") {
-      const ethBalance = parseFloat(ethWallet.balance || 0);
-      const ethAmount = parseFloat(amount);
-      if (ethAmount > ethBalance) {
-        errors.push(`Insufficient ETH balance. You have ${ethBalance.toFixed(4)} ETH`);
-      }
-    } else {
-      const xlmBalance = parseFloat(stellarWallet.balance || 0);
-      const xlmAmount = parseFloat(amount);
-      if (xlmAmount > xlmBalance) {
-        errors.push(`Insufficient XLM balance. You have ${xlmBalance.toFixed(2)} XLM`);
+    if (direction === "ETH_TO_XLM" && ethWallet.isConnected) {
+      const balance = parseFloat(ethWallet.balance || 0);
+      const amountNum = parseFloat(amount);
+      if (amountNum > balance) {
+        errors.push(`Insufficient ETH balance. You have ${balance.toFixed(4)} ETH`);
       }
     }
 
-    // Check timelock
-    if (timelockMinutes < 5 || timelockMinutes > 1440) {
+    if (direction === "XLM_TO_ETH" && stellarWallet.isConnected) {
+      const balance = parseFloat(stellarWallet.balance || 0);
+      const amountNum = parseFloat(amount);
+      if (amountNum > balance) {
+        errors.push(`Insufficient XLM balance. You have ${balance.toFixed(2)} XLM`);
+      }
+    }
+
+    if (!timelockMinutes || timelockMinutes < 5 || timelockMinutes > 1440) {
       errors.push("Timelock must be between 5 and 1440 minutes");
+    }
+
+    if (direction === "ETH_TO_XLM" && !ethWallet.isConnected) {
+      errors.push("Please connect your Ethereum wallet");
+    }
+
+    if (direction === "XLM_TO_ETH" && !stellarWallet.isConnected) {
+      errors.push("Please connect your Stellar wallet");
     }
 
     return errors;
@@ -377,22 +291,7 @@ export function SwapProvider({ children }) {
   // Reset swap state
   const resetSwap = useCallback(() => {
     setCurrentSwap(null);
-    setSwapStep("init");
-  }, []);
-
-  // Get swap step description
-  const getSwapStepDescription = useCallback((step) => {
-    const descriptions = {
-      init: "Initialize swap",
-      initiated: "Swap initiated",
-      locked_eth: "ETH locked, waiting for XLM lock",
-      locked_stellar: "XLM locked, ready to claim",
-      ready_to_claim: "Ready to claim funds",
-      completed: "Swap completed successfully",
-      refunded: "Swap refunded",
-      failed: "Swap failed"
-    };
-    return descriptions[step] || "Unknown step";
+    setSwapStep("idle");
   }, []);
 
   return (
@@ -400,18 +299,14 @@ export function SwapProvider({ children }) {
       value={{
         currentSwap,
         swapStep,
-        setSwapStep,
         initiateEthToXlmSwap,
         initiateXlmToEthSwap,
         lockEthMutation,
         lockXlmMutation,
         claimXlmMutation,
         claimEthMutation,
-        refundMutation,
-        getSwapStatus,
-        getSwapHistory,
         validateSwapParams,
-        resetSwap,
+        resetSwap
       }}
     >
       {children}

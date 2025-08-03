@@ -122,12 +122,9 @@ export default function SwapInterface() {
     if (!currentSwap) return;
 
     try {
-      const message = `Lock ETH for swap ${currentSwap.swapId}: ${formData.amount} ETH`;
-      const signature = await ethWallet.signer.signMessage(message);
-
       await lockEthMutation.mutateAsync({
         swapId: currentSwap.swapId,
-        signature
+        amount: formData.amount
       });
     } catch (error) {
       console.error("Failed to lock ETH:", error);

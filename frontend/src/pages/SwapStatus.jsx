@@ -1,18 +1,28 @@
 import React from "react";
 import { useParams } from "react-router-dom";
+import { useQuery } from "@tanstack/react-query";
 import { useSwap } from "../contexts/SwapContext.jsx";
 import { useWallet } from "../contexts/WalletContext.jsx";
 import { Link } from "react-router-dom";
 
 export default function SwapStatus({ swap: propSwap }) {
   const { swapId } = useParams();
-  const { getSwapStatus, claimXlmMutation, claimEthMutation, refundMutation } = useSwap();
+  const { claimXlmMutation, claimEthMutation, refundMutation } = useSwap();
   const { ethWallet, stellarWallet } = useWallet();
 
   // If we have a prop swap, use it directly, otherwise fetch by ID
   const { data: swapData, isLoading, error } = propSwap ?
     { data: { swap: propSwap, status: propSwap.status, canClaim: false, canRefund: false }, isLoading: false, error: null } :
-    getSwapStatus(swapId);
+    useQuery({
+      queryKey: ['swap-status', swapId],
+      queryFn: async () => {
+        const response = await fetch(`http://localhost:3001/api/swap/status/${swapId}`);
+        if (!response.ok) throw new Error('Failed to fetch swap status');
+        return response.json();
+      },
+      enabled: !!swapId,
+      refetchInterval: 5000 // Poll every 5 seconds
+    });
 
   // Debug logging
   if (propSwap) {
@@ -52,6 +62,10 @@ export default function SwapStatus({ swap: propSwap }) {
   }
 
   const { swap, status, canClaim, canRefund } = swapData;
+
+  // Handle both database field names (eth_amount, xlm_amount) and frontend field names (ethAmount, xlmAmount)
+  const ethAmount = swap.eth_amount || swap.ethAmount;
+  const xlmAmount = swap.xlm_amount || swap.xlmAmount;
 
   const getStepStatus = (step) => {
     const stepOrder = ["pending", "locked_eth", "locked_stellar", "claimed_xlm", "claimed_eth", "completed"];
@@ -181,11 +195,11 @@ export default function SwapStatus({ swap: propSwap }) {
               </div>
               <div className="flex justify-between">
                 <span className="text-gray-400">ETH Amount:</span>
-                <span className="text-white">{formatAmount(swap.eth_amount)} ETH</span>
+                <span className="text-white">{formatAmount(ethAmount)} ETH</span>
               </div>
               <div className="flex justify-between">
                 <span className="text-gray-400">XLM Amount:</span>
-                <span className="text-white">{formatAmount(swap.xlm_amount, 7)} XLM</span>
+                <span className="text-white">{formatAmount(xlmAmount, 7)} XLM</span>
               </div>
               <div className="flex justify-between">
                 <span className="text-gray-400">Timelock:</span>

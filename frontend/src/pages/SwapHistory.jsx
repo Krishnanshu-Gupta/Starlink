@@ -1,18 +1,39 @@
 import React, { useState } from "react";
 import { Link } from "react-router-dom";
+import { useQuery } from "@tanstack/react-query";
 import { useWallet } from "../contexts/WalletContext.jsx";
-import { useSwap } from "../contexts/SwapContext.jsx";
 
 export default function SwapHistory() {
   const { ethWallet, stellarWallet } = useWallet();
-  const { getSwapHistory } = useSwap();
 
   const [filter, setFilter] = useState("all");
   const [sortBy, setSortBy] = useState("created_at");
 
-  // Get swap history for both wallets
-  const ethHistory = getSwapHistory(ethWallet.address);
-  const stellarHistory = getSwapHistory(stellarWallet.address);
+  // Get swap history for Ethereum wallet
+  const ethHistory = useQuery({
+    queryKey: ['swap-history', ethWallet.address],
+    queryFn: async () => {
+      if (!ethWallet.address) return { swaps: [] };
+      const response = await fetch(`http://localhost:3001/api/swap/history/${ethWallet.address}`);
+      if (!response.ok) throw new Error('Failed to fetch ETH swap history');
+      return response.json();
+    },
+    enabled: !!ethWallet.address,
+    refetchInterval: 10000 // Poll every 10 seconds
+  });
+
+  // Get swap history for Stellar wallet
+  const stellarHistory = useQuery({
+    queryKey: ['swap-history', stellarWallet.address],
+    queryFn: async () => {
+      if (!stellarWallet.address) return { swaps: [] };
+      const response = await fetch(`http://localhost:3001/api/swap/history/${stellarWallet.address}`);
+      if (!response.ok) throw new Error('Failed to fetch Stellar swap history');
+      return response.json();
+    },
+    enabled: !!stellarWallet.address,
+    refetchInterval: 10000 // Poll every 10 seconds
+  });
 
   // Combine and deduplicate swaps
   const allSwaps = [
@@ -233,10 +254,10 @@ export default function SwapHistory() {
                     <td className="px-6 py-4 whitespace-nowrap">
                       <div className="text-sm text-white">
                         <p className="font-medium">
-                          {formatAmount(swap.amount)} ETH
+                          {formatAmount(swap.eth_amount)} ETH
                         </p>
                         <p className="text-gray-400">
-                          ↔ {formatAmount(swap.amount, 7)} XLM
+                          ↔ {formatAmount(swap.xlm_amount, 7)} XLM
                         </p>
                       </div>
                     </td>

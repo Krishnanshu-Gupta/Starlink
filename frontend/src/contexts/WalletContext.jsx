@@ -123,65 +123,53 @@ export function WalletProvider({ children }) {
     return sent.wait();
   };
 
-  // Lock ETH in HTLC
-  const lockEth = async (swapId, amount) => {
-    try {
-      if (!ethereumAccount) {
+  // Sign message for swap authorization
+  const signSwapMessage = async (swapId, amount, token = "ETH") => {
+    if (!ethWallet.isConnected || !ethWallet.signer) {
         throw new Error("Ethereum wallet not connected");
       }
 
-      // Get swap details from backend
-      const swapResponse = await fetch(`http://localhost:3001/api/swap/status/${swapId}`);
-      const swapData = await swapResponse.json();
+    const message = `Lock ${token} for swap ${swapId}: ${amount} ${token}`;
+    const signature = await ethWallet.signer.signMessage(message);
+    return { signature, message };
+  };
 
-      if (!swapData.swap) {
-        throw new Error("Swap not found");
+  // Lock ETH in HTLC contract directly through MetaMask
+  const lockEthInHTLC = async (swapId, amount, recipient, hash, timelock) => {
+    if (!ethWallet.isConnected || !ethWallet.signer) {
+      throw new Error("Ethereum wallet not connected");
       }
 
-      // Create transaction data for HTLC contract
-      const htlcContract = new ethers.Contract(
-        "0x6c91739cbC4c9e4F1907Cc11AC8431ca1a55d0C6", // HTLC contract address
-        [
-          "function lockETH(address recipient, bytes32 hash, uint256 timelock) external payable"
-        ],
-        ethereumProvider
-      );
+    try {
+      // HTLC contract address and ABI
+      const HTLC_ADDRESS = "0x6c91739cbC4c9e4F1907Cc11AC8431ca1a55d0C6";
+      const HTLC_ABI = [
+        "function lockETH(address recipient, bytes32 hash, uint256 timelock) external payable returns (bytes32)"
+      ];
 
-      // Create transaction
-      const tx = await htlcContract.lockETH.populateTransaction(
-        swapData.swap.initiator_address,
-        swapData.swap.hash,
-        swapData.swap.timelock,
-        { value: swapData.swap.eth_amount }
-      );
+      // Create contract instance
+      const contract = new ethers.Contract(HTLC_ADDRESS, HTLC_ABI, ethWallet.signer);
 
-      // Send transaction through MetaMask
-      const signer = ethereumProvider.getSigner();
-      const transaction = await signer.sendTransaction(tx);
+      // Convert amount to wei
+      const amountInWei = ethers.parseEther(amount.toString());
 
-      console.log("Transaction sent:", transaction.hash);
-
-      // Wait for confirmation
-      const receipt = await transaction.wait();
-      console.log("Transaction confirmed:", receipt.hash);
-
-      // Update backend with transaction hash
-      const response = await fetch("http://localhost:3001/api/swap/lock-eth", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          swapId,
-          signature: receipt.hash // Use transaction hash as signature
-        })
+      // Call lockETH function
+      const tx = await contract.lockETH(recipient, hash, timelock, {
+        value: amountInWei
       });
 
-      if (!response.ok) {
-        throw new Error("Failed to update swap status");
-      }
+      console.log("Transaction sent:", tx.hash);
 
-      return await response.json();
+      // Wait for confirmation
+      const receipt = await tx.wait();
+      console.log("Transaction confirmed:", receipt.hash);
+
+      return {
+        hash: receipt.hash,
+        status: receipt.status
+      };
     } catch (error) {
-      console.error("Error locking ETH:", error);
+      console.error("Error locking ETH in HTLC:", error);
       throw error;
     }
   };
@@ -428,6 +416,8 @@ export function WalletProvider({ children }) {
         disconnectStellarWallet,
         signEthTransaction,
         signStellarTransaction,
+        signSwapMessage,
+        lockEthInHTLC,
         refreshBalances,
         checkWalletAvailability,
         checkFreighterStatus

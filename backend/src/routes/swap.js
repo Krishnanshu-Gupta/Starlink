@@ -4,10 +4,14 @@ import { getDatabase } from "../database.js";
 import {
   getHTLCContract,
   getResolverContract,
+  getEthereumProvider,
   generateSecretAndHash,
   calculateTimelock,
   formatEthAmount,
-  formatXlmAmount
+  formatXlmAmount,
+  verifyEthSignature,
+  lockEthInHTLC,
+  claimEthFromHTLC
 } from "../services/blockchain.js";
 import {
   startDutchAuction,
@@ -21,7 +25,7 @@ import {
 } from "../services/resolver.js";
 import { ethers } from "ethers";
 import { Keypair } from "@stellar/stellar-sdk";
-import { createStellarHTLC } from "../services/stellar.js";
+import { createStellarHTLC, claimStellarHTLC } from "../services/stellar.js";
 
 const router = express.Router();
 
@@ -127,7 +131,7 @@ router.post("/bid", async (req, res) => {
 // POST /api/swap/lock-eth - Lock ETH in HTLC (called by user)
 router.post("/lock-eth", async (req, res) => {
   try {
-    const { swapId, signature } = req.body;
+    const { swapId, signature, userAddress } = req.body;
 
     const db = await getDatabase();
     const swap = await db.get("SELECT * FROM swaps WHERE id = ?", [swapId]);
@@ -139,48 +143,83 @@ router.post("/lock-eth", async (req, res) => {
       return res.status(400).json({ error: "Swap is not in pending status" });
     }
 
-    console.log(`🔒 Locking ETH for swap: ${swapId}`);
+    // Verify signature if provided
+    if (signature && userAddress) {
+      // Convert wei amount to ETH for signature verification
+      const ethAmount = ethers.formatEther(swap.eth_amount);
+      const message = `Lock ETH for swap ${swapId}: ${ethAmount} ETH`;
+      const isValidSignature = await verifyEthSignature(message, signature, userAddress);
+
+      if (!isValidSignature) {
+        console.error("Signature verification failed:", {
+          message,
+          signature,
+          userAddress,
+          expectedAddress: swap.initiator_address
+        });
+        return res.status(401).json({ error: "Invalid signature" });
+      }
+    }
+
+    console.log(`🔒 Updating swap status to locked_eth: ${swapId}`);
 
     try {
-      // Verify signature (in production, this would be a real signature from MetaMask)
-      // For now, we'll skip signature verification for demo purposes
-      // const signer = ethers.verifyMessage(swapId, signature);
+      // Since the frontend handles the actual MetaMask transaction,
+      // we just need to update the database status
+      // The frontend will provide the transaction hash in a separate call
 
-      // Create signer from private key (in production, this would come from MetaMask)
-      const provider = getEthereumProvider();
-      const signer = new ethers.Wallet(process.env.USER_PRIVATE_KEY || "0x1234567890123456789012345678901234567890123456789012345678901234", provider);
-
-      // Lock ETH in HTLC contract
-      const result = await lockEthInHTLC(
-        swap.initiator_address,
-        swap.hash,
-        swap.timelock,
-        swap.eth_amount,
-        signer
-      );
-
-      console.log("Real HTLC lockETH transaction hash:", result.hash);
-
-      // Update database with transaction hash
+      // Update database status to locked_eth
       await db.run(
-        "UPDATE swaps SET status = 'locked_eth', ethereum_tx_hash = ? WHERE id = ?",
-        [result.hash, swapId]
+        "UPDATE swaps SET status = 'locked_eth' WHERE id = ?",
+        [swapId]
       );
 
-      console.log("✅ ETH locked successfully");
+      console.log("✅ Swap status updated to locked_eth");
       res.json({
         success: true,
-        message: "ETH locked successfully. Resolvers can now bid on XLM.",
-        status: "locked_eth",
-        txHash: result.hash
+        message: "Swap status updated. ETH transaction should be completed via MetaMask.",
+        status: "locked_eth"
       });
     } catch (error) {
-      console.error("HTLC lock error:", error);
-      return res.status(500).json({ error: "Failed to lock ETH in HTLC contract" });
+      console.error("Database update error:", error);
+      return res.status(500).json({ error: "Failed to update swap status" });
     }
   } catch (error) {
     console.error("Error locking ETH:", error);
     res.status(500).json({ error: "Failed to lock ETH" });
+  }
+});
+
+// POST /api/swap/update-eth-tx - Update ETH transaction hash after MetaMask transaction
+router.post("/update-eth-tx", async (req, res) => {
+  try {
+    const { swapId, txHash } = req.body;
+
+    const db = await getDatabase();
+    const swap = await db.get("SELECT * FROM swaps WHERE id = ?", [swapId]);
+    if (!swap) {
+      return res.status(404).json({ error: "Swap not found" });
+    }
+
+    if (swap.status !== "locked_eth") {
+      return res.status(400).json({ error: "Swap is not in locked_eth status" });
+    }
+
+    // Update database with transaction hash
+    await db.run(
+      "UPDATE swaps SET ethereum_tx_hash = ? WHERE id = ?",
+      [txHash, swapId]
+    );
+
+    console.log(`✅ ETH transaction hash updated for swap ${swapId}: ${txHash}`);
+    res.json({
+      success: true,
+      message: "Transaction hash updated successfully",
+      txHash
+    });
+  } catch (error) {
+    console.error("Error updating ETH transaction hash:", error);
+    res.status(500).json({ error: "Failed to update transaction hash" });
   }
 });
 
@@ -252,7 +291,7 @@ router.post("/claim-xlm", async (req, res) => {
     }
 
     // Verify secret matches hash
-    const hash = ethers.keccak256("0x" + secret);
+    const hash = ethers.keccak256(secret);
     if (hash !== swap.hash) {
       return res.status(400).json({ error: "Invalid secret" });
     }
@@ -343,7 +382,7 @@ router.post("/claim-eth", async (req, res) => {
     }
 
     // Verify secret matches hash
-    const hash = ethers.keccak256("0x" + secret);
+    const hash = ethers.keccak256(secret);
     if (hash !== swap.hash) {
       return res.status(400).json({ error: "Invalid secret" });
     }

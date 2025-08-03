@@ -1,38 +1,49 @@
 import { ethers } from "ethers";
 import pkg from "@stellar/stellar-sdk";
 const { Keypair, Networks } = pkg;
+import { createStellarHTLC } from "./stellar.js";
+import { getDatabase } from "../database.js";
 
-// Resolver configuration
+// Production settings
+const ENABLE_AUTOMATED_BIDDING = process.env.ENABLE_AUTOMATED_BIDDING === "true";
+
+// Resolver configuration with your testnet accounts
 const RESOLVERS = [
   {
     id: "resolver1",
     name: "Resolver Alpha",
-    ethAddress: "0x1234567890123456789012345678901234567890",
-    ethPrivateKey: process.env.RESOLVER1_ETH_KEY || "0x1234567890123456789012345678901234567890123456789012345678901234",
-    stellarAddress: "GALPHA123456789012345678901234567890123456789012345678901234567890",
+    ethAddress: process.env.RESOLVER1_ETH_ADDRESS || "0x1234567890123456789012345678901234567890",
+    ethPrivateKey: process.env.RESOLVER1_ETH_KEY || "0x1111111111111111111111111111111111111111111111111111111111111111",
+    stellarAddress: process.env.RESOLVER1_STELLAR_ADDRESS || "GALPHA123456789012345678901234567890123456789012345678901234567890",
     stellarSecretKey: process.env.RESOLVER1_STELLAR_KEY || "SALPHA123456789012345678901234567890123456789012345678901234567890",
     maxBid: 100, // Max XLM they're willing to send
-    minBid: 50   // Min XLM they'll accept
+    minBid: 50,   // Min XLM they'll accept
+    successRate: 0.85, // 85% success rate
+    avgResponseTime: 2000 // 2 seconds average response time
   },
   {
     id: "resolver2",
     name: "Resolver Beta",
-    ethAddress: "0x2345678901234567890123456789012345678901",
-    ethPrivateKey: process.env.RESOLVER2_ETH_KEY || "0x2345678901234567890123456789012345678901234567890123456789012345",
-    stellarAddress: "GBETA123456789012345678901234567890123456789012345678901234567890",
+    ethAddress: process.env.RESOLVER2_ETH_ADDRESS || "0x2345678901234567890123456789012345678901",
+    ethPrivateKey: process.env.RESOLVER2_ETH_KEY || "0x2222222222222222222222222222222222222222222222222222222222222222",
+    stellarAddress: process.env.RESOLVER2_STELLAR_ADDRESS || "GBETA123456789012345678901234567890123456789012345678901234567890",
     stellarSecretKey: process.env.RESOLVER2_STELLAR_KEY || "SBETA123456789012345678901234567890123456789012345678901234567890",
     maxBid: 120,
-    minBid: 60
+    minBid: 60,
+    successRate: 0.90, // 90% success rate
+    avgResponseTime: 1500 // 1.5 seconds average response time
   },
   {
     id: "resolver3",
     name: "Resolver Gamma",
-    ethAddress: "0x3456789012345678901234567890123456789012",
-    ethPrivateKey: process.env.RESOLVER3_ETH_KEY || "0x3456789012345678901234567890123456789012345678901234567890123456",
-    stellarAddress: "GGAMMA123456789012345678901234567890123456789012345678901234567890",
+    ethAddress: process.env.RESOLVER3_ETH_ADDRESS || "0x3456789012345678901234567890123456789012",
+    ethPrivateKey: process.env.RESOLVER3_ETH_KEY || "0x3333333333333333333333333333333333333333333333333333333333333333",
+    stellarAddress: process.env.RESOLVER3_STELLAR_ADDRESS || "GGAMMA123456789012345678901234567890123456789012345678901234567890",
     stellarSecretKey: process.env.RESOLVER3_STELLAR_KEY || "SGAMMA123456789012345678901234567890123456789012345678901234567890",
     maxBid: 110,
-    minBid: 55
+    minBid: 55,
+    successRate: 0.88, // 88% success rate
+    avgResponseTime: 1800 // 1.8 seconds average response time
   }
 ];
 
@@ -46,7 +57,8 @@ let auctionState = {
   currentPrice: 0,
   bids: [],
   filledAmount: 0,
-  totalAmount: 0
+  totalAmount: 0,
+  ethAmount: 0
 };
 
 // Automated resolver bidding system
@@ -77,6 +89,7 @@ export function startDutchAuction(swapId, totalAmount, initialPrice, durationMin
     bids: [],
     filledAmount: 0,
     totalAmount,
+    ethAmount: 0, // Will be set when ETH is locked
     // Smart auction parameters
     minPriceDecrease: 0.001, // 0.1%
     maxPriceDecrease: 0.015, // 1.5%
@@ -127,7 +140,7 @@ export function getCurrentAuctionPrice() {
   return auctionState.currentPrice;
 }
 
-// Submit bid with smart partial fill logic
+// Submit bid with smart partial fill logic and real transaction simulation
 export function submitBid(resolverId, amount, price) {
   if (!auctionState.active) {
     throw new Error("No active auction");
@@ -149,9 +162,10 @@ export function submitBid(resolverId, amount, price) {
   const currentPrice = getCurrentAuctionPrice();
   const remainingAmount = auctionState.totalAmount - auctionState.filledAmount;
 
-  // Calculate how much this resolver can actually fill
+  // Calculate how much this resolver can actually fill based on success rate
   const maxFillAmount = Math.min(amount, remainingAmount);
-  const actualFillAmount = Math.min(maxFillAmount, amount * 0.8); // Resolver fills 80% of their bid on average
+  const successFactor = resolver.successRate;
+  const actualFillAmount = Math.min(maxFillAmount, amount * successFactor);
 
   if (actualFillAmount <= 0) {
     throw new Error("No remaining amount to fill");
@@ -163,7 +177,9 @@ export function submitBid(resolverId, amount, price) {
     resolverName: resolver.name,
     amount: actualFillAmount,
     price: currentPrice,
-    timestamp: Date.now()
+    timestamp: Date.now(),
+    successRate: resolver.successRate,
+    responseTime: resolver.avgResponseTime
   };
 
   auctionState.bids.push(bid);
@@ -257,8 +273,13 @@ export async function claimEthForResolver(resolverId, swapId, secret) {
   return { txHash };
 }
 
-// Start automated bidding for resolvers
+// Start automated bidding for resolvers with real transaction simulation
 export function startAutomatedBidding() {
+  if (!ENABLE_AUTOMATED_BIDDING) {
+    console.log("🤖 Automated bidding disabled");
+    return;
+  }
+
   if (automatedBiddingInterval) {
     clearInterval(automatedBiddingInterval);
   }
@@ -276,23 +297,46 @@ export function startAutomatedBidding() {
       return;
     }
 
-    // Each resolver has a chance to bid based on their strategy
+    // Each resolver has a chance to bid based on their strategy and success rate
     for (const resolver of resolvers) {
-      if (Math.random() < 0.3) { // 30% chance each interval
+      // Calculate bid probability based on resolver's success rate and current market conditions
+      const baseProbability = 0.3; // 30% base chance
+      const successRateBonus = resolver.successRate * 0.2; // Up to 20% bonus for high success rate
+      const priceCompetitiveness = Math.max(0, (currentPrice - auctionState.initialPrice * 0.99) / auctionState.initialPrice) * 0.3; // Up to 30% bonus for competitive pricing
+
+      const bidProbability = baseProbability + successRateBonus + priceCompetitiveness;
+
+      if (Math.random() < bidProbability) {
         try {
-          const bidAmount = Math.min(
+          // Calculate bid amount based on resolver's strategy
+          const maxBidAmount = Math.min(
             resolver.maxBid * (0.1 + Math.random() * 0.4), // 10-50% of max bid
             remainingAmount
           );
 
-          if (bidAmount >= resolver.minBid) {
-            const bid = submitBid(resolver.id, bidAmount, currentPrice);
-            console.log(`🤖 Automated bid: ${resolver.name} filled ${bid.amount.toFixed(2)} XLM`);
+          if (maxBidAmount >= resolver.minBid) {
+            // Simulate response time delay
+            setTimeout(async () => {
+              try {
+                const bid = submitBid(resolver.id, maxBidAmount, currentPrice);
+                console.log(`🤖 Automated bid: ${resolver.name} filled ${bid.amount.toFixed(2)} XLM`);
 
-            // Simulate resolver claiming their portion
-            setTimeout(() => {
-              claimResolverPortion(resolver.id, bid.amount, currentPrice);
-            }, 2000);
+                // Actually lock XLM in Stellar HTLC
+                try {
+                  const lockResult = await lockXlmForResolver(resolver.id, auctionState.swapId, bid.amount);
+                  console.log(`🔒 Resolver ${resolver.name} locked ${bid.amount} XLM in Stellar HTLC`);
+                } catch (lockError) {
+                  console.log(`❌ Resolver ${resolver.name} failed to lock XLM: ${lockError.message}`);
+                }
+
+                // Simulate resolver claiming their portion after a delay
+                setTimeout(() => {
+                  claimResolverPortion(resolver.id, bid.amount, currentPrice);
+                }, resolver.avgResponseTime);
+              } catch (error) {
+                console.log(`🤖 Resolver ${resolver.name} bid failed: ${error.message}`);
+              }
+            }, Math.random() * resolver.avgResponseTime); // Random delay within resolver's response time
           }
         } catch (error) {
           console.log(`🤖 Resolver ${resolver.name} bid failed: ${error.message}`);
@@ -301,7 +345,7 @@ export function startAutomatedBidding() {
     }
   }, 3000); // Check every 3 seconds
 
-  console.log("🤖 Automated resolver bidding started");
+  console.log("🤖 Automated resolver bidding started with real transaction simulation");
 }
 
 // Stop automated bidding
@@ -313,7 +357,49 @@ export function stopAutomatedBidding() {
   }
 }
 
-// Simulate resolver claiming their portion
+// Lock XLM for a resolver in Stellar HTLC
+async function lockXlmForResolver(resolverId, swapId, amount) {
+  const resolver = getResolver(resolverId);
+  if (!resolver) {
+    throw new Error("Invalid resolver");
+  }
+
+  try {
+    // Get swap details from database
+    const db = await getDatabase();
+    const swap = await db.get("SELECT * FROM swaps WHERE id = ?", [swapId]);
+    if (!swap) {
+      throw new Error("Swap not found");
+    }
+
+    // Create Stellar keypair from resolver's secret key
+    const resolverKeypair = Keypair.fromSecret(resolver.stellarSecretKey);
+
+    // Create Stellar HTLC escrow
+    const stellarResult = await createStellarHTLC(
+      swap.recipient_address,
+      swap.hash,
+      swap.timelock,
+      amount.toString(),
+      resolverKeypair
+    );
+
+    // Store resolver lock in database
+    await db.run(`
+      INSERT INTO resolver_locks (
+        swap_id, resolver_id, amount, escrow_address, stellar_tx_hash, status
+      ) VALUES (?, ?, ?, ?, ?, ?)
+    `, [swapId, resolverId, amount, stellarResult.escrowAddress, stellarResult.transactionHash, "locked"]);
+
+    console.log(`🔒 Resolver ${resolver.name} locked ${amount} XLM in escrow ${stellarResult.escrowAddress}`);
+    return stellarResult;
+  } catch (error) {
+    console.error(`❌ Resolver ${resolver.name} failed to lock XLM:`, error);
+    throw error;
+  }
+}
+
+// Simulate resolver claiming their portion with real transaction simulation
 async function claimResolverPortion(resolverId, amount, price) {
   const resolver = getResolver(resolverId);
   if (!resolver) return;
@@ -324,9 +410,11 @@ async function claimResolverPortion(resolverId, amount, price) {
 
     console.log(`💰 Resolver ${resolver.name} claiming ${ethPortion.toFixed(6)} ETH for ${amount} XLM`);
 
-    // In a real system, this would trigger the HTLC claim
-    // For now, we'll just log the claim
+    // In a real system, this would trigger the HTLC claim with real private keys
+    // For now, we'll simulate the claim with realistic transaction data
+    const simulatedTxHash = "0x" + crypto.randomBytes(32).toString("hex");
     console.log(`🔓 Resolver ${resolver.name} would claim ${ethPortion.toFixed(6)} ETH to ${resolver.ethAddress}`);
+    console.log(`📝 Simulated transaction hash: ${simulatedTxHash}`);
 
   } catch (error) {
     console.error(`❌ Resolver ${resolver.name} claim failed:`, error);
@@ -335,25 +423,40 @@ async function claimResolverPortion(resolverId, amount, price) {
 
 // Get resolver fill statistics
 export function getResolverStats() {
-  if (!auctionState.active) return null;
-
   const stats = {};
   const resolvers = getResolvers();
 
   resolvers.forEach(resolver => {
-    const resolverBids = auctionState.bids.filter(bid => bid.resolverId === resolver.id);
-    const totalFilled = resolverBids.reduce((sum, bid) => sum + bid.amount, 0);
-    const averagePrice = resolverBids.length > 0
-      ? resolverBids.reduce((sum, bid) => sum + bid.price, 0) / resolverBids.length
-      : 0;
+    if (auctionState.active) {
+      // If there's an active auction, calculate real stats
+      const resolverBids = auctionState.bids.filter(bid => bid.resolverId === resolver.id);
+      const totalFilled = resolverBids.reduce((sum, bid) => sum + bid.amount, 0);
+      const averagePrice = resolverBids.length > 0
+        ? resolverBids.reduce((sum, bid) => sum + bid.price, 0) / resolverBids.length
+        : 0;
 
-    stats[resolver.id] = {
-      name: resolver.name,
-      totalFilled: totalFilled.toFixed(2),
-      averagePrice: averagePrice.toFixed(2),
-      bidCount: resolverBids.length,
-      percentage: ((totalFilled / auctionState.totalAmount) * 100).toFixed(1)
-    };
+      stats[resolver.id] = {
+        name: resolver.name,
+        totalFilled: totalFilled.toFixed(2),
+        averagePrice: averagePrice.toFixed(2),
+        bidCount: resolverBids.length,
+        percentage: auctionState.totalAmount > 0 ? ((totalFilled / auctionState.totalAmount) * 100).toFixed(1) : "0.0",
+        successRate: resolver.successRate,
+        avgResponseTime: resolver.avgResponseTime
+      };
+    } else {
+      // If no active auction, return default stats
+      stats[resolver.id] = {
+        name: resolver.name,
+        totalFilled: "0.00",
+        averagePrice: "0.00",
+        bidCount: 0,
+        percentage: "0.0",
+        successRate: resolver.successRate,
+        avgResponseTime: resolver.avgResponseTime,
+        status: "idle"
+      };
+    }
   });
 
   return stats;
