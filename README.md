@@ -64,9 +64,9 @@ Next-generation, trustless cross-chain swap protocol bridging **Ethereum** and *
 
 ## 🗂️ Repository Layout
 
-contracts/ Solidity sources and Hardhat tests
-backend/ Node API, resolver bots, relayer watchers
-frontend/ React UI (Vite + Tailwind)
+- contracts/ Solidity sources and Hardhat tests
+- backend/ Node API, resolver bots, relayer watchers
+- frontend/ React UI (Vite + Tailwind)
 
 ### Prerequisites
 - Node 18+
